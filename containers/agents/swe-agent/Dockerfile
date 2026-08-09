@@ -88,7 +88,18 @@ printf '%s' "$TASK" > /tmp/problem_statement.txt
 # directory sweagent still needs to write its final trajectory file into,
 # which crashes with FileNotFoundError after a real submit. Point it outside
 # /testbed so it never appears in the repo's own git state.
-exec /opt/swe-agent-venv/bin/sweagent run --agent.model.name="openai/${EVAL_MODEL:-default}" --agent.model.per_instance_cost_limit=3 \
+# Model name comes from $MODEL: run-agent scrubs the env (`env -i`) and forwards
+# only an allow-list — it maps EVAL_MODEL → MODEL, so the agent never sees
+# EVAL_MODEL itself.
+# per_instance_cost_limit/total_cost_limit=0: SWE-agent's own LiteLLM-based
+# cost check aborts with ModelConfigurationError for any model name absent
+# from LiteLLM's static cost map (e.g. gcp/gemini-3.5-flash-lite) — unrelated
+# to whether the call actually succeeds. The gateway (not SWE-agent) is the
+# eval framework's cost authority (EVAL_MODEL_MAX_BUDGET), so disable
+# SWE-agent's redundant, model-name-brittle check per LiteLLM's own suggested
+# fix in that error message.
+exec /opt/swe-agent-venv/bin/sweagent run --agent.model.name="openai/${MODEL:-default}" \
+  --agent.model.per_instance_cost_limit=0 --agent.model.total_cost_limit=0 \
   --agent.model.api_base="${OPENAI_BASE_URL:-http://model:4000}" --env.deployment.type=local \
   --env.repo.type=preexisting --env.repo.repo_name=testbed --problem_statement.path=/tmp/problem_statement.txt \
   --output_dir=/tmp/trajectories
