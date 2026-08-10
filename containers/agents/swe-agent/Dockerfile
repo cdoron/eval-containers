@@ -67,12 +67,25 @@ git config --global --add safe.directory /opt/swe-agent
 # it — even for one-line output. Disable the pager globally so git commands
 # return immediately instead of eating the 30s budget every single time.
 git config --global core.pager cat
-# The benchmark's actual checkout (at the buggy commit grade.sh diffs against)
-# lives at /testbed, not /workspace — LocalRepoConfig's copy() would try to
-# stage a copy of it under a basename dir anyway (and fails as non-root via
-# chown), so use the `preexisting` repo type (its copy() is a no-op) pointed
-# straight at /testbed.
-git config --global --add safe.directory /testbed
+# Repo configuration is benchmark-dependent. SWE-bench-style benchmarks ship a
+# git checkout at /testbed (at the buggy commit grade.sh diffs against);
+# swe_env.py's reset() runs `git status/fetch/checkout/clean` against it, so the
+# repo MUST be declared. State-based benchmarks like AppWorld have no git repo
+# at all — sweagent's `--env.repo` defaults to None, and both _copy_repo() and
+# _reset_repository() short-circuit cleanly when repo is None. Passing
+# `--env.repo.type=preexisting --env.repo.repo_name=testbed` at a benchmark with
+# no /testbed makes reset() `cd /testbed` and abort with "Failed to clean
+# repository". So declare the repo only when /testbed is actually a git repo,
+# and otherwise run repo-less.
+#
+# LocalRepoConfig's copy() would try to stage a copy of /testbed under a
+# basename dir anyway (and fails as non-root via chown), so use the
+# `preexisting` repo type (its copy() is a no-op) pointed straight at /testbed.
+repo_args=()
+if [ -d /testbed/.git ]; then
+  git config --global --add safe.directory /testbed
+  repo_args=(--env.repo.type=preexisting --env.repo.repo_name=testbed)
+fi
 # problem_statement.path, not .text=$TASK: pydantic-settings' CLI source
 # case-folds each flag with a regex (`^(--flag)(.*)`) whose `(.*)` doesn't
 # match newlines, so any multi-line --problem_statement.text value is
@@ -101,7 +114,7 @@ printf '%s' "$TASK" > /tmp/problem_statement.txt
 exec /opt/swe-agent-venv/bin/sweagent run --agent.model.name="openai/${MODEL:-default}" \
   --agent.model.per_instance_cost_limit=0 --agent.model.total_cost_limit=0 \
   --agent.model.api_base="${OPENAI_BASE_URL:-http://model:4000}" --env.deployment.type=local \
-  --env.repo.type=preexisting --env.repo.repo_name=testbed --problem_statement.path=/tmp/problem_statement.txt \
+  "${repo_args[@]}" --problem_statement.path=/tmp/problem_statement.txt \
   --output_dir=/tmp/trajectories
 E
 
