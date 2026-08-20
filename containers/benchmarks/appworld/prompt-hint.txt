@@ -1,0 +1,4 @@
+If the task asks you to find, compute, or answer something, pass that answer
+to complete_task as the `answer` argument: complete_task(answer=<answer>).
+Calling complete_task() with no argument, or a different argument name, does
+not record the answer.

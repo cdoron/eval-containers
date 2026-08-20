@@ -65,13 +65,18 @@ networks:
   upstream: {}
 
 volumes:
-  # Bind to the host so results land at ./output/{benchmark}/{task-id}/
+  # Bind to the host so detailed task output is visible and agents are comparable:
+  # ./output/{benchmark}/{agent}/{task-id}/
   # (compose/RULES.md rule 18) instead of an anonymous managed volume with no
   # host-visible path. `${PWD}` resolves to the CLI's invocation directory,
   # not this file's directory, regardless of `include:` nesting.
   output:
+    # Driver options on an existing named volume are immutable. Include every
+    # output-path axis so one task cannot silently mount another task's host
+    # directory.
+    name: eval-output-${EVAL_BENCHMARK:-aime}-${EVAL_AGENT:-claude-code}-${EVAL_TASK_ID:-0}
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${PWD}/output/${EVAL_BENCHMARK:-aime}/${EVAL_TASK_ID:-0}
+      device: ${PWD}/output/${EVAL_BENCHMARK:-aime}/${EVAL_AGENT:-claude-code}/${EVAL_TASK_ID:-0}

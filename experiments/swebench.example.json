@@ -1,0 +1,23 @@
+{
+  "$schema": "./schema.json",
+  "defaults": {
+    "benchmark": "swe-bench",
+    "task_id": "astropy__astropy-12907",
+    "agent": "opencode-advisory",
+    "executor_model": "aws/claude-haiku-4-5",
+    "gateway_image": "litellm",
+    "platform": "linux/amd64",
+    "mode": "compose",
+    "local": true,
+    "prompt_hint": {"mode": "none"},
+    "advisor": {
+      "model": "aws/claude-opus-4-8",
+      "prompt_policy": "none"
+    }
+  },
+  "runs": [
+    {"experiment_id": "conservative", "advisor": {"tool_description_variant": "conservative"}},
+    {"experiment_id": "neutral", "advisor": {"tool_description_variant": "neutral"}},
+    {"experiment_id": "prescriptive", "advisor": {"tool_description_variant": "prescriptive"}}
+  ]
+}

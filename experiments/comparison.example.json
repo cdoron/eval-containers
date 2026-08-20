@@ -1,0 +1,25 @@
+{
+  "$schema": "./schema.json",
+  "defaults": {
+    "benchmark": "appworld",
+    "task_id": "6",
+    "executor_model": "aws/claude-haiku-4-5",
+    "gateway_image": "litellm",
+    "platform": "linux/amd64",
+    "mode": "compose",
+    "local": true,
+    "prompt_hint": {"mode": "default"}
+  },
+  "runs": [
+    {"agent": "opencode"},
+    {
+      "experiment_id": "opencode-advisory-neutral",
+      "agent": "opencode-advisory",
+      "advisor": {
+        "model": "aws/claude-opus-4-8",
+        "tool_description_variant": "neutral",
+        "prompt_policy": "none"
+      }
+    }
+  ]
+}
