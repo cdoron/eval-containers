@@ -141,6 +141,8 @@ spec:
             - { name: EVAL_MODEL,                  value: {{ include "eval.modelLabel" $v | quote }} }
             - { name: EVAL_TASK_ID,                value: {{ $v.task | quote }} }
             - { name: EVAL_TIMEOUT,                value: {{ $v.timeout | quote }} }
+            - { name: EVAL_PROMPT_HINT_MODE,       value: {{ $v.promptHintMode | quote }} }
+            - { name: EVAL_PROMPT_HINT,            value: {{ $v.promptHint | quote }} }
             - { name: BENCHMARK,                   value: {{ $v.benchmark | quote }} }
             - { name: AGENT,                       value: {{ $v.agent | quote }} }
             - { name: MODEL,                       value: {{ include "eval.modelLabel" $v | quote }} }

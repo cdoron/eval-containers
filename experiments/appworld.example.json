@@ -1,0 +1,31 @@
+{
+  "$schema": "./schema.json",
+  "defaults": {
+    "benchmark": "appworld",
+    "task_id": "6",
+    "agent": "opencode-advisory",
+    "executor_model": "aws/claude-haiku-4-5",
+    "gateway_image": "litellm",
+    "platform": "linux/amd64",
+    "mode": "compose",
+    "local": true,
+    "prompt_hint": {"mode": "default"},
+    "advisor": {
+      "model": "aws/claude-opus-4-8",
+      "tool_description_variant": "neutral",
+      "prompt_policy": "none",
+      "log_payloads": false
+    }
+  },
+  "runs": [
+    {"experiment_id": "neutral"},
+    {"experiment_id": "encouraging", "advisor": {"tool_description_variant": "encouraging"}},
+    {
+      "experiment_id": "mandatory-first-last",
+      "advisor": {
+        "tool_description_variant": "mandatory",
+        "prompt_policy": "mandatory-first-last"
+      }
+    }
+  ]
+}
