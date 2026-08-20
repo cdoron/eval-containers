@@ -45,6 +45,16 @@ overrides the env var.
 | `--model <name>` | `EVAL_MODEL` | sets the gateway upstream |
 | `--agent-reasoning-effort <level>` | `EVAL_AGENT_REASONING_EFFORT` | the agent applies it; e.g. `high` |
 | `--task-id <id>` | `EVAL_TASK_ID` | default `0` |
+| `--gateway-image <name>` | `EVAL_GATEWAY_IMAGE` | e.g. `litellm` or `bifrost` |
+| `--prompt-hint-mode <none\|default\|custom>` | `EVAL_PROMPT_HINT_MODE` | default file is opt-in |
+| `--prompt-hint <text>` | `EVAL_PROMPT_HINT` | required for custom mode |
+| `--advisor-tool-description-variant <name>` | `ADVISOR_TOOL_DESCRIPTION_VARIANT` | advisory agent only |
+| `--advisor-tool-description <text>` | `ADVISOR_TOOL_DESCRIPTION` | custom override |
+| `--advisory-prompt-policy <none\|mandatory-first-last>` | `ADVISORY_PROMPT_POLICY` | separate from tool wording |
+| `--advisor-model <model>` | `ADVISOR_MODEL` | independent advisor model |
+| `--advisor-base-url <url>` | `ADVISOR_BASE_URL` | credential stays in `ADVISOR_API_KEY` env |
+| `--advisor-log-payloads[=true\|false]` | `ADVISOR_LOG_PAYLOADS` | off by default; bare flag means true |
+| `--experiment-id <id>` | `ADVISORY_EXPERIMENT_ID` | trace/experiment label |
 | `--mode <compose\|container\|job>` | — | default `compose` |
 | `--benchmark-tag <tag>` | `EVAL_BENCHMARK_TAG` | image tag |
 | `--agent-tag <tag>` | `EVAL_AGENT_TAG` | image tag |
@@ -60,6 +70,10 @@ overrides the env var.
 | `--overlay <values.yaml>` | — | `job` mode only; extra `helm -f` (e.g. `deploy/values-openshift.yaml`) |
 
 See [Environment variables](env-vars.md) for the full `EVAL_*` namespace.
+
+JSON matrices are an additional convenience, not a replacement for these
+flags. Preview with `python3 experiments/run_matrix.py <config.json>` and add
+`--build --execute` to build unique combinations and run sequentially.
 
 ## `build` flags
 

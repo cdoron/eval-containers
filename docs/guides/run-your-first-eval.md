@@ -34,7 +34,7 @@ it.
 ## 3. Read the result
 
 ```bash
-cat output/aime/0/task/result.json
+cat output/aime/codex/0/task/result.json
 ```
 
 The primary metric is `reward`; benchmarks may add named fields alongside it
@@ -42,7 +42,7 @@ The primary metric is `reward`; benchmarks may add named fields alongside it
 of the agent at:
 
 ```bash
-cat output/aime/0/model/trajectory.jsonl
+cat output/aime/codex/0/model/trajectory.jsonl
 ```
 
 ## Variations
@@ -60,6 +60,11 @@ eval-containers run aime --task-id 0 --agent codex --mode container --local
 
 Every `EVAL_*` variable has a matching `--kebab-case` flag — full list in the
 [CLI reference](../reference/cli.md) and [Environment variables](../reference/env-vars.md).
+
+Detailed results are written to `output/<benchmark>/<agent>/<task>/`. Repeating
+the same benchmark, agent, and task replaces that detailed directory, while the
+benchmark-level append-only `results.jsonl` preserves every result/configuration
+summary for comparison.
 
 ## Next
 

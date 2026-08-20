@@ -568,6 +568,31 @@ jobs:
           fi
           ./eval-containers build compose --benchmark "$B"
 
+  # ── optional agent-owned compose overlays ────────────────────────────────
+  agent-compose:
+    needs: [cli, merge]
+    if: always() && (needs.merge.result == 'success' || inputs.dry_run) && needs.cli.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v8
+        with: { name: cli, path: . }
+      - run: chmod +x eval-containers
+      - name: publish opencode-advisory compose overlay
+        env:
+          EVAL_REGISTRY: ${{ env.REGISTRY }}
+          TAG: ${{ env.TAG }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "dry-run: would publish oci://${EVAL_REGISTRY}/agent-opencode-advisory-compose"; exit 0
+          fi
+          ./eval-containers build compose --agent opencode-advisory
+
   # ── eval combos — sharded; each job bakes a chunk of (benchmark, agent) ───
   # One bake-eval per item: shared (evals/<b>--<a>) or per-task (evals/<b>-<task>
   # --<a>, pointing at the per-task base). A combo is a thin overlay (FROM the
@@ -662,8 +687,8 @@ jobs:
   # since they were last gated at release, so it's skipped (the dev run isn't
   # publishing :latest anyway — the promotion below is tag-only).
   release-gate:
-    needs: [merge, per-task, compose, combos]
-    if: always() && needs.merge.result == 'success' && !inputs.dry_run && (github.ref_type == 'tag' || inputs.tag != '' || inputs.rebuild_bases)
+    needs: [merge, per-task, compose, agent-compose, combos]
+    if: always() && needs.merge.result == 'success' && needs['agent-compose'].result == 'success' && !inputs.dry_run && (github.ref_type == 'tag' || inputs.tag != '' || inputs.rebuild_bases)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.3
@@ -715,7 +740,7 @@ jobs:
   # ── end-of-run report: stages + per-image build time & registry size ──────
   report:
     name: Build-time + size report
-    needs: [bases, build, per-task, merge, compose, combos, release-gate, enumerate]
+    needs: [bases, build, per-task, merge, compose, agent-compose, combos, release-gate, enumerate]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -779,6 +804,7 @@ jobs:
             echo "| leaves | ${{ needs.build.result }} |"
             echo "| per-task | ${{ needs.per-task.result }} |"
             echo "| compose | ${{ needs.compose.result }} |"
+            echo "| agent compose | ${{ needs['agent-compose'].result }} |"
             echo "| combos | ${{ needs.combos.result }} |"
             echo "| CVE gate + :latest | ${{ needs.release-gate.result }} |"
             echo ""

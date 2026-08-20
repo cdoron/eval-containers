@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Eval Containers experiment matrix",
+  "type": "object",
+  "required": ["runs"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "defaults": {"$ref": "#/$defs/run"},
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/run"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "run": {
+      "type": "object",
+      "properties": {
+        "benchmark": {"type": "string"},
+        "task_id": {"type": ["string", "integer"]},
+        "agent": {"type": "string"},
+        "executor_model": {"type": "string"},
+        "gateway_image": {"type": "string"},
+        "platform": {"type": "string"},
+        "mode": {"enum": ["compose", "container", "job"]},
+        "local": {"type": "boolean"},
+        "timeout": {"type": "integer", "minimum": 1},
+        "max_budget": {"type": "number", "minimum": 0},
+        "agent_reasoning_effort": {"type": "string"},
+        "experiment_id": {"type": "string"},
+        "prompt_hint": {
+          "type": "object",
+          "properties": {
+            "mode": {"enum": ["none", "default", "custom"]},
+            "text": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        "advisor": {
+          "type": "object",
+          "properties": {
+            "model": {"type": "string"},
+            "base_url": {"type": "string"},
+            "tool_description_variant": {"type": "string"},
+            "tool_description": {"type": "string"},
+            "prompt_policy": {"enum": ["none", "mandatory-first-last"]},
+            "log_payloads": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

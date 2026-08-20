@@ -33,9 +33,10 @@
 use clap::{Args, Subcommand};
 use eval_containers::bake;
 use eval_containers::naming::{
-    OCI_SOURCE, REPO_URL, agent_bake_target, agent_image, benchmark_bake_target, benchmark_image,
-    benchmark_task_image, compose_artifact, eval_task_image, eval_task_standalone_image,
-    flatten_imagestream, model_bake_target, model_image,
+    OCI_SOURCE, REPO_URL, agent_bake_target, agent_compose_artifact, agent_image,
+    benchmark_bake_target, benchmark_image, benchmark_task_image, compose_artifact,
+    eval_task_image, eval_task_standalone_image, flatten_imagestream, model_bake_target,
+    model_image,
 };
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -128,18 +129,20 @@ pub enum BuildTarget {
         #[arg(long)]
         no_pull: bool,
     },
-    /// Publish a benchmark's compose stack as `oci://<registry>/eval-<x>`.
+    /// Publish a benchmark stack or agent-owned overlay as an OCI Compose artifact.
     ///
-    /// Flattens `containers/benchmarks/<x>/compose.yaml` (resolves its
-    /// `include:` of the shared `compose/services.yaml` and bakes in the
-    /// benchmark's sidecars) into one self-contained artifact, so `run --mode
-    /// compose` consumes it with a single `-f`, registry-only. The shared shape
-    /// stays single-sourced in `services.yaml`; flattening happens here at
-    /// publish, not in the consumer. Run in a release CI matrix over every
-    /// benchmark.
+    /// Benchmark stacks are flattened so their local includes become one
+    /// self-contained artifact. Agent overlays are published separately and
+    /// layered before the benchmark artifact only when that agent is selected.
     Compose {
+        /// Publish `containers/benchmarks/<name>/compose.yaml` as `eval-<name>`.
         #[arg(long)]
-        benchmark: String,
+        #[arg(required_unless_present = "agent", conflicts_with = "agent")]
+        benchmark: Option<String>,
+        /// Publish `containers/agents/<name>/compose.yaml` as
+        /// `agent-<name>-compose`.
+        #[arg(long, conflicts_with = "benchmark")]
+        agent: Option<String>,
     },
 }
 
@@ -320,22 +323,37 @@ pub fn execute(registry: &str, args: BuildArgs) -> Result<(), String> {
                 dry_run,
             )
         }
-        BuildTarget::Compose { benchmark } => {
+        BuildTarget::Compose { benchmark, agent } => {
             if builder.is_some() {
                 return Err("--builder does not apply to `build compose` \
                             (it publishes a compose file, not an image)"
                     .into());
             }
-            // The benchmark feeds both an OCI ref and a temp-file path, so reject
-            // anything outside the DNS/-tag-safe `[a-z0-9-]` benchmark namespace
-            // before it reaches either (defense-in-depth; CI feeds real dir names).
-            if benchmark.is_empty()
-                || !benchmark
+            let (kind, name, compose_file, artifact) = if let Some(benchmark) = benchmark {
+                let compose_file = format!("containers/benchmarks/{benchmark}/compose.yaml");
+                let artifact = compose_artifact(registry, &benchmark);
+                ("benchmark", benchmark, compose_file, artifact)
+            } else if let Some(agent) = agent {
+                let compose_file = format!("containers/agents/{agent}/compose.yaml");
+                let artifact = agent_compose_artifact(registry, &agent);
+                ("agent", agent, compose_file, artifact)
+            } else {
+                return Err("build compose requires --benchmark or --agent".into());
+            };
+            // The name feeds both an OCI ref and a file path, so reject anything
+            // outside the DNS/tag-safe `[a-z0-9-]` namespace first.
+            if name.is_empty()
+                || !name
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             {
                 return Err(format!(
-                    "invalid --benchmark '{benchmark}': must be a [a-z0-9-] name"
+                    "invalid --{kind} '{name}': must be a [a-z0-9-] name"
+                ));
+            }
+            if !std::path::Path::new(&compose_file).is_file() {
+                return Err(format!(
+                    "{kind} '{name}' has no compose overlay at {compose_file}"
                 ));
             }
             // Tag the artifact with the fleet release version, exactly like the
@@ -344,9 +362,8 @@ pub fn execute(registry: &str, args: BuildArgs) -> Result<(), String> {
             // compose artifacts. `run --mode compose` consumes `:latest`, matching
             // the `:latest` image refs baked into every benchmark's compose.yaml.
             let version = std::env::var("TAG").unwrap_or_else(|_| "latest".to_string());
-            let compose_file = format!("containers/benchmarks/{benchmark}/compose.yaml");
-            let tag = format!("{}:{version}", compose_artifact(registry, &benchmark));
-            docker_compose_publish(&benchmark, &compose_file, &tag, dry_run)
+            let tag = format!("{artifact}:{version}");
+            docker_compose_publish(&name, &compose_file, &tag, dry_run)
         }
     }
 }

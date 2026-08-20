@@ -48,6 +48,16 @@ baked, shared artifact that ignores `EVAL_MODEL`. Both are pull-not-build; see
 | `EVAL_MODEL_MAX_BUDGET` | Hard cap on model spend (USD) for this run | `1` |
 | `EVAL_AGENT_REASONING_EFFORT` | Reasoning effort the agent applies (`low`/`medium`/`high`; some also accept `xhigh`/`max`) | agent default |
 | `EVAL_REGISTRY` | Registry to pull from | `ghcr.io/exgentic` |
+| `EVAL_PROMPT_HINT_MODE` | `none`, `default`, or `custom` prompt prefix | `none` |
+| `EVAL_PROMPT_HINT` | Custom prompt prefix for `custom` mode | unset |
+
+Advisor-specific runtime variables are loaded only by the
+`opencode-advisory` Compose overlay: `ADVISOR_MODEL`, `ADVISOR_BASE_URL`,
+`ADVISOR_TOOL_DESCRIPTION_VARIANT`, `ADVISOR_TOOL_DESCRIPTION`,
+`ADVISORY_PROMPT_POLICY`, `ADVISORY_EXPERIMENT_ID`, and
+`ADVISOR_LOG_PAYLOADS`. Keep
+`ADVISOR_API_KEY` in the environment; experiment JSON deliberately excludes
+secrets.
 
 Supported agents: **codex, claude-code, claude-code-rtk, aider, cline,
 copilot-cli, openclaw**. Setting it for any other agent **fails loud** (the run

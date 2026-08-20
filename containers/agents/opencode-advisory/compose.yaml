@@ -1,0 +1,42 @@
+services:
+  advisor:
+    image: ${EVAL_REGISTRY:-ghcr.io/exgentic}/agents/opencode-advisory:${EVAL_AGENT_TAG:-latest}
+    entrypoint: ["/opt/agent/advisory/service/start.sh"]
+    environment:
+      ADVISOR_BASE_URL: ${ADVISOR_BASE_URL:-}
+      ADVISOR_API_KEY: ${ADVISOR_API_KEY:-none}
+      ADVISOR_MODEL: ${ADVISOR_MODEL:-}
+      ADVISOR_SERVICE_HOST: ${ADVISOR_SERVICE_HOST:-0.0.0.0}
+      ADVISOR_SERVICE_PORT: ${ADVISOR_SERVICE_PORT:-8001}
+      ADVISOR_LOG_PAYLOADS: ${ADVISOR_LOG_PAYLOADS:-false}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${ADVISOR_SERVICE_PORT:-8001}/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 2s
+    networks:
+      - internal
+      - upstream
+
+  # The benchmark compose file is layered after this overlay and supplies the
+  # real runner image. This placeholder only makes the overlay independently
+  # publishable as an OCI Compose artifact.
+  runner:
+    image: ${EVAL_REGISTRY:-ghcr.io/exgentic}/agents/opencode-advisory:${EVAL_AGENT_TAG:-latest}
+    depends_on:
+      advisor:
+        condition: service_healthy
+    environment:
+      ADVISORY_GATEWAY_URL: ${ADVISORY_GATEWAY_URL:-http://advisor:8001}
+      ADVISOR_TOOL_DESCRIPTION_VARIANT: ${ADVISOR_TOOL_DESCRIPTION_VARIANT:-}
+      ADVISOR_TOOL_DESCRIPTION: ${ADVISOR_TOOL_DESCRIPTION:-}
+      ADVISORY_PROMPT_POLICY: ${ADVISORY_PROMPT_POLICY:-}
+      ADVISORY_EXPERIMENT_ID: ${ADVISORY_EXPERIMENT_ID:-}
+    networks:
+      - internal
+
+networks:
+  internal:
+    internal: true
+  upstream: {}
