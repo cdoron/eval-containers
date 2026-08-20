@@ -101,6 +101,12 @@ pub fn compose_artifact(registry: &str, benchmark: &str) -> String {
     format!("{registry}/eval-{benchmark}")
 }
 
+/// `{registry}/agent-<agent>-compose` — an optional agent-owned Compose
+/// overlay layered before the benchmark artifact by `run --mode compose`.
+pub fn agent_compose_artifact(registry: &str, agent: &str) -> String {
+    format!("{registry}/agent-{agent}-compose")
+}
+
 /// The canonical source repository for every fleet image, emitted as the
 /// `org.opencontainers.image.source` label ([`OCI_SOURCE`]) at build time —
 /// the standard provenance pointer GitHub reads to link a package to its repo
@@ -297,5 +303,13 @@ mod tests {
         // `run --mode compose` consumes as oci://{registry}/eval-X — one shared
         // helper, so the two sides can't drift apart.
         assert_eq!(compose_artifact(REG, "aime"), format!("{REG}/eval-aime"));
+    }
+
+    #[test]
+    fn agent_compose_artifact_is_agent_owned() {
+        assert_eq!(
+            agent_compose_artifact(REG, "opencode-advisory"),
+            format!("{REG}/agent-opencode-advisory-compose")
+        );
     }
 }

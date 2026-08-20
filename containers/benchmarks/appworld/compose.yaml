@@ -12,5 +12,14 @@ services:
       gateway:
         condition: service_healthy
     image: ${EVAL_REGISTRY:-ghcr.io/exgentic}/evals/appworld--${EVAL_AGENT:-claude-code}:latest
+    platform: linux/amd64
+    # AppWorld's own app server + opencode's Bun/Node runtime share this one
+    # container; the shared runner.yaml template's 2G cap is too tight for
+    # that combination and was causing a silent OOM kill (exit 137) mid-run.
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
     environment:
       BENCHMARK: appworld
