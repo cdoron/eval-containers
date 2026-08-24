@@ -103,10 +103,16 @@ async fn replay_compose(
     // Absolute paths: testcontainers' local client cd's into the FIRST file's
     // parent dir before running `docker compose`, so relative `-f` paths would
     // break — and cwd landing in the benchmark dir is right for its `include:`.
-    let files = [
-        compose_file.to_string_lossy().into_owned(),
-        overlay.to_string_lossy().into_owned(),
-    ];
+    let mut files = Vec::new();
+    if agent == "opencode-advisory" {
+        files.push(
+            cwd.join("containers/agents/opencode-advisory/compose.yaml")
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    files.push(compose_file.to_string_lossy().into_owned());
+    files.push(overlay.to_string_lossy().into_owned());
     let file_refs: Vec<&str> = files.iter().map(String::as_str).collect();
     let mut compose = DockerCompose::with_local_client(file_refs.as_slice());
 
@@ -138,6 +144,12 @@ async fn replay_compose(
         ("REPLAY_OUTPUT", output_str.as_str()),
     ] {
         compose = compose.with_env(key, val);
+    }
+    if agent == "opencode-advisory" {
+        compose = compose
+            .with_env("ADVISOR_MODEL", model)
+            .with_env("ADVISOR_BASE_URL", "http://gateway:4000/openai/v1")
+            .with_env("ADVISOR_API_KEY", "sk-replay-test");
     }
     // Classic path only: point compose at the registry the images were built under.
     if classic {
@@ -221,6 +233,7 @@ fn assert_result_valid(benchmark: &str, agent: &str, task_id: &str) {
     // orchestration.
     let agent_path = Path::new("output")
         .join(benchmark)
+        .join(agent)
         .join(task_id)
         .join("agent/result.json");
     assert!(
@@ -369,25 +382,35 @@ async fn ensure_images(benchmark: &str, agent: &str, mode: ReplayMode) {
     }
 
     for (kind, name) in [("bench", benchmark), ("agent", agent)] {
+        let mut args = vec!["run", "--", "build", kind, name];
+        let platform = common::test_platform();
+        if let Some(platform) = platform.as_deref() {
+            args.extend(["--platform", platform]);
+        }
         let status = Command::new("cargo")
-            .args(["run", "--", "build", kind, name])
+            .args(args)
             .status()
             .unwrap_or_else(|e| panic!("failed to run cargo run -- build {kind}: {e}"));
         assert!(status.success(), "failed to build {kind} image for {name}");
     }
     // --no-pull: bench and agent images are in the BuildKit content store from the
     // steps above; skip the remote manifest check that fails on arm64.
+    let mut args = vec![
+        "run",
+        "--",
+        "build",
+        "eval",
+        benchmark,
+        "--agent",
+        agent,
+        "--no-pull",
+    ];
+    let platform = common::test_platform();
+    if let Some(platform) = platform.as_deref() {
+        args.extend(["--platform", platform]);
+    }
     let status = Command::new("cargo")
-        .args([
-            "run",
-            "--",
-            "build",
-            "eval",
-            benchmark,
-            "--agent",
-            agent,
-            "--no-pull",
-        ])
+        .args(args)
         .status()
         .expect("failed to run cargo run -- build eval");
     assert!(
@@ -621,6 +644,13 @@ replay_test!(
     "appworld",
     "terminus-2",
     "292"
+);
+
+replay_test!(
+    replay_appworld_659_opencode_advisory,
+    "appworld",
+    "opencode-advisory",
+    "659"
 );
 
 replay_test!(
