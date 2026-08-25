@@ -8,12 +8,12 @@
   "platform": "linux/amd64",
   "mode": "compose",
   "local": true,
-  "experiment_id": "neutral",
+  "experiment_id": "encouraging",
   "advisory_config_file": "experiments/advisory-config.example.json",
   "executor_system_prompt_variant": "appworld-task-completion",
   "advisor": {
     "model": "aws/claude-opus-4-8",
-    "tool_description_variant": "neutral",
+    "tool_description_variant": "encouraging",
     "system_prompt_variant": "strategic-default",
     "log_payloads": false
   }

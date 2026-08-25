@@ -1,23 +1,19 @@
 {
   "$schema": "./schema.json",
-  "runs": [
-    {
-      "benchmark": "swe-bench",
-      "task_id": "astropy__astropy-12907",
-      "agent": "opencode-advisory",
-      "executor_model": "aws/claude-haiku-4-5",
-      "gateway_image": "litellm",
-      "platform": "linux/amd64",
-      "mode": "compose",
-      "local": true,
-      "timeout": 900,
-      "experiment_id": "swebench-mandatory-system-prompt",
-      "executor_system_prompt_file": "containers/agents/opencode-advisory/advisory/system-prompts/mandatory-first-last.txt",
-      "advisor": {
-        "model": "aws/claude-opus-4-8",
-        "tool_description_variant": "mandatory",
-        "log_payloads": false
-      }
-    }
-  ]
+  "benchmark": "swe-bench",
+  "task_id": "astropy__astropy-12907",
+  "agent": "opencode-advisory",
+  "executor_model": "aws/claude-haiku-4-5",
+  "gateway_image": "litellm",
+  "platform": "linux/amd64",
+  "mode": "compose",
+  "local": true,
+  "timeout": 900,
+  "experiment_id": "swebench-mandatory-system-prompt",
+  "executor_system_prompt_file": "containers/agents/opencode-advisory/advisory/system-prompts/mandatory-first-last.txt",
+  "advisor": {
+    "model": "aws/claude-opus-4-8",
+    "tool_description_variant": "mandatory",
+    "log_payloads": false
+  }
 }
