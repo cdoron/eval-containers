@@ -61,11 +61,13 @@ baked, shared artifact that ignores `EVAL_MODEL`. Both are pull-not-build; see
 Advisor-specific runtime variables are loaded only by the
 `opencode-advisory` Compose overlay. Experimental prompt and description
 settings use the `EVAL_*` variables above. Service settings are
-`ADVISOR_MODEL`, `ADVISOR_BASE_URL`, `ADVISORY_EXPERIMENT_ID`, and
-`ADVISOR_LOG_PAYLOADS`. Advisor calls emit separate role-tagged spans with
-their input/output messages, model, and input/output token usage. Keep
-`ADVISOR_API_KEY` in the environment; experiment JSON deliberately excludes
-secrets.
+`ADVISOR_MODEL`, `ADVISOR_BASE_URL`, `ADVISOR_API_KEY`,
+`ADVISORY_EXPERIMENT_ID`, and `ADVISOR_LOG_PAYLOADS`. `OPENAI_API_BASE` and
+`OPENAI_API_KEY` configure the executor gateway; the `ADVISOR_*` endpoint and
+key configure only the advisor sidecar. Set both pairs explicitly in `.env`;
+neither pair inherits from the other. Advisor calls emit separate role-tagged
+spans with their input/output messages, model, and input/output token usage.
+Experiment JSON deliberately excludes secrets.
 
 Supported agents: **codex, claude-code, claude-code-rtk, aider, cline,
 copilot-cli, openclaw**. Setting it for any other agent **fails loud** (the run
