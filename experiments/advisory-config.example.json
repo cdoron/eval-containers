@@ -1,0 +1,13 @@
+{
+  "executor_system_prompts": {
+    "inspect-tools": "Look at all available tools and their descriptions before planning or executing. Review them again after errors or suspicious results.",
+    "appworld-task-completion": "If the task asks you to find, compute, or answer something, pass that answer to complete_task as the answer argument: complete_task(answer=<answer>). Calling complete_task() with no argument, or a different argument name, does not record the answer.",
+    "mandatory-first-last": "Use the advisory tool before substantive work to review your plan, and consult it again before submitting the final solution."
+  },
+  "advisor_system_prompts": {
+    "strategic-default": "You are a strategic advisor to a coding agent. Give concise, concrete, actionable guidance based only on the supplied context. Do not perform the task yourself."
+  },
+  "tool_descriptions": {
+    "brief-reviewer": "Ask an independent advisor to review a question, plan, result, error, or proposed next step. Provide the relevant context and use the response to improve your decision."
+  }
+}

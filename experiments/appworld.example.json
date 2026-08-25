@@ -9,11 +9,12 @@
     "platform": "linux/amd64",
     "mode": "compose",
     "local": true,
-    "prompt_hint": {"mode": "default"},
+    "advisory_config_file": "experiments/advisory-config.example.json",
+    "executor_system_prompt_variant": "appworld-task-completion",
     "advisor": {
       "model": "aws/claude-opus-4-8",
       "tool_description_variant": "neutral",
-      "prompt_policy": "none",
+      "system_prompt_variant": "strategic-default",
       "log_payloads": false
     }
   },
@@ -24,8 +25,9 @@
       "experiment_id": "mandatory-first-last",
       "advisor": {
         "tool_description_variant": "mandatory",
-        "prompt_policy": "mandatory-first-last"
-      }
+        "system_prompt_variant": "strategic-default"
+      },
+      "executor_system_prompt_variant": "mandatory-first-last"
     }
   ]
 }

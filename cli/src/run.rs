@@ -90,13 +90,25 @@ pub struct RunArgs {
     #[arg(long)]
     task_id: Option<String>,
 
-    /// Prompt hint source: none, default benchmark file, or custom text.
-    #[arg(long, value_parser = ["none", "default", "custom"])]
-    prompt_hint_mode: Option<String>,
-
-    /// Custom prompt text used with --prompt-hint-mode custom.
+    /// Text appended to the executor's system prompt.
     #[arg(long)]
-    prompt_hint: Option<String>,
+    executor_system_prompt: Option<String>,
+
+    /// Read the executor system-prompt addition from a host text file.
+    #[arg(long)]
+    executor_system_prompt_file: Option<PathBuf>,
+
+    /// Named executor system prompt from --advisory-config-file.
+    #[arg(long)]
+    executor_system_prompt_variant: Option<String>,
+
+    /// Named configuration catalog as inline JSON.
+    #[arg(long)]
+    advisory_config: Option<String>,
+
+    /// Read the named configuration catalog from a host JSON file.
+    #[arg(long)]
+    advisory_config_file: Option<PathBuf>,
 
     /// Named advisor tool description from tool-descriptions.json.
     #[arg(long)]
@@ -106,9 +118,21 @@ pub struct RunArgs {
     #[arg(long)]
     advisor_tool_description: Option<String>,
 
-    /// Advisor prompt policy: none or mandatory-first-last.
-    #[arg(long, value_parser = ["none", "mandatory-first-last"])]
-    advisory_prompt_policy: Option<String>,
+    /// Read the custom advisor tool description from a host text file.
+    #[arg(long)]
+    advisor_tool_description_file: Option<PathBuf>,
+
+    /// Custom advisor system prompt.
+    #[arg(long)]
+    advisor_system_prompt: Option<String>,
+
+    /// Read the advisor system prompt from a host text file.
+    #[arg(long)]
+    advisor_system_prompt_file: Option<PathBuf>,
+
+    /// Named advisor system prompt from --advisory-config-file.
+    #[arg(long)]
+    advisor_system_prompt_variant: Option<String>,
 
     /// Model used by the advisor service.
     #[arg(long)]
@@ -121,6 +145,14 @@ pub struct RunArgs {
     /// Log advisor request/response payloads. Accepts a bare flag or =true/false.
     #[arg(long, num_args = 0..=1, default_missing_value = "true", require_equals = true)]
     advisor_log_payloads: Option<bool>,
+
+    /// Advisor context source: agent-provided (default) or full-session.
+    #[arg(long)]
+    advisor_context_mode: Option<String>,
+
+    /// Maximum serialized full-session context size in bytes; 0 means unlimited.
+    #[arg(long)]
+    advisor_full_context_max_bytes: Option<u64>,
 
     /// Experiment label attached to advisor requests.
     #[arg(long)]
@@ -228,17 +260,57 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
             "benchmark, agent, and task IDs are too long for the Compose output volume name".into(),
         );
     }
-    if matches!(args.prompt_hint_mode.as_deref(), Some("custom"))
-        && args.prompt_hint.as_deref().unwrap_or("").is_empty()
-    {
-        return Err("--prompt-hint-mode custom requires --prompt-hint <text>".into());
+    let executor_system_prompt = resolve_text_source(
+        "executor system prompt",
+        args.executor_system_prompt.as_ref(),
+        args.executor_system_prompt_file.as_ref(),
+    )?;
+    reject_source_conflict(
+        "executor system prompt",
+        executor_system_prompt.as_ref(),
+        args.executor_system_prompt_variant.as_ref(),
+    )?;
+    let advisor_tool_description = resolve_text_source(
+        "advisor tool description",
+        args.advisor_tool_description.as_ref(),
+        args.advisor_tool_description_file.as_ref(),
+    )?;
+    reject_source_conflict(
+        "advisor tool description",
+        advisor_tool_description.as_ref(),
+        args.advisor_tool_description_variant.as_ref(),
+    )?;
+    let advisor_system_prompt = resolve_text_source(
+        "advisor system prompt",
+        args.advisor_system_prompt.as_ref(),
+        args.advisor_system_prompt_file.as_ref(),
+    )?;
+    reject_source_conflict(
+        "advisor system prompt",
+        advisor_system_prompt.as_ref(),
+        args.advisor_system_prompt_variant.as_ref(),
+    )?;
+    let advisory_config = resolve_text_source(
+        "advisory configuration",
+        args.advisory_config.as_ref(),
+        args.advisory_config_file.as_ref(),
+    )?;
+    if let Some(document) = advisory_config.as_ref() {
+        validate_advisory_config(document)?;
     }
+    validate_advisor_context_mode(args.advisor_context_mode.as_deref())?;
     let advisor_options_supplied = args.advisor_tool_description_variant.is_some()
-        || args.advisor_tool_description.is_some()
-        || args.advisory_prompt_policy.is_some()
+        || advisor_tool_description.is_some()
+        || advisor_system_prompt.is_some()
+        || args.advisor_system_prompt_variant.is_some()
+        || executor_system_prompt.is_some()
+        || args.executor_system_prompt_variant.is_some()
+        || advisory_config.is_some()
         || args.advisor_model.is_some()
         || args.advisor_base_url.is_some()
         || args.advisor_log_payloads.is_some()
+        || args.advisor_context_mode.is_some()
+        || args.advisor_full_context_max_bytes.is_some()
         || args.experiment_id.is_some();
     if advisor_options_supplied && agent != "opencode-advisory" {
         return Err("advisor options require --agent opencode-advisory".into());
@@ -264,25 +336,47 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
     if let Some(ref v) = args.agent_reasoning_effort {
         envs.push(("EVAL_AGENT_REASONING_EFFORT", v.clone()));
     }
-    push_optional(&mut envs, "EVAL_PROMPT_HINT_MODE", &args.prompt_hint_mode);
-    push_optional(&mut envs, "EVAL_PROMPT_HINT", &args.prompt_hint);
     push_optional(
         &mut envs,
-        "ADVISOR_TOOL_DESCRIPTION_VARIANT",
+        "EVAL_EXECUTOR_SYSTEM_PROMPT",
+        &executor_system_prompt,
+    );
+    push_optional(
+        &mut envs,
+        "EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT",
+        &args.executor_system_prompt_variant,
+    );
+    push_optional(&mut envs, "EVAL_ADVISORY_CONFIG", &advisory_config);
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT",
         &args.advisor_tool_description_variant,
     );
     push_optional(
         &mut envs,
-        "ADVISOR_TOOL_DESCRIPTION",
-        &args.advisor_tool_description,
+        "EVAL_ADVISOR_TOOL_DESCRIPTION",
+        &advisor_tool_description,
     );
     push_optional(
         &mut envs,
-        "ADVISORY_PROMPT_POLICY",
-        &args.advisory_prompt_policy,
+        "EVAL_ADVISOR_SYSTEM_PROMPT",
+        &advisor_system_prompt,
+    );
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_SYSTEM_PROMPT_VARIANT",
+        &args.advisor_system_prompt_variant,
     );
     push_optional(&mut envs, "ADVISOR_MODEL", &args.advisor_model);
     push_optional(&mut envs, "ADVISOR_BASE_URL", &args.advisor_base_url);
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_CONTEXT_MODE",
+        &args.advisor_context_mode,
+    );
+    if let Some(value) = args.advisor_full_context_max_bytes {
+        envs.push(("EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES", value.to_string()));
+    }
     push_optional(&mut envs, "ADVISORY_EXPERIMENT_ID", &args.experiment_id);
     push_optional(&mut envs, "EVAL_GATEWAY_IMAGE", &args.gateway_image);
     if let Some(value) = args.advisor_log_payloads {
@@ -338,6 +432,82 @@ fn push_optional<'a>(envs: &mut Vec<(&'a str, String)>, key: &'a str, value: &Op
     }
 }
 
+fn resolve_text_source(
+    label: &str,
+    inline: Option<&String>,
+    file: Option<&PathBuf>,
+) -> Result<Option<String>, String> {
+    if inline.is_some() && file.is_some() {
+        return Err(format!(
+            "choose either inline {label} text or a {label} file, not both"
+        ));
+    }
+    let value = match (inline, file) {
+        (Some(value), None) => Some(value.clone()),
+        (None, Some(path)) => Some(
+            fs::read_to_string(path)
+                .map_err(|e| format!("failed to read {label} file '{}': {e}", path.display()))?,
+        ),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!(),
+    };
+    if value.as_deref().is_some_and(|text| text.trim().is_empty()) {
+        return Err(format!("{label} must not be empty"));
+    }
+    Ok(value)
+}
+
+fn reject_source_conflict(
+    label: &str,
+    direct: Option<&String>,
+    variant: Option<&String>,
+) -> Result<(), String> {
+    if direct.is_some() && variant.is_some() {
+        return Err(format!(
+            "choose either direct {label} text or a named {label} variant, not both"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_advisory_config(document: &str) -> Result<(), String> {
+    let parsed: Value = serde_json::from_str(document)
+        .map_err(|e| format!("advisory configuration is not valid JSON: {e}"))?;
+    let catalog = parsed
+        .as_object()
+        .ok_or_else(|| "advisory configuration must be a JSON object".to_string())?;
+    let allowed = [
+        "executor_system_prompts",
+        "advisor_system_prompts",
+        "tool_descriptions",
+    ];
+    for (section, entries) in catalog {
+        if !allowed.contains(&section.as_str()) {
+            return Err(format!(
+                "unknown advisory configuration section '{section}'"
+            ));
+        }
+        let entries = entries.as_object().ok_or_else(|| {
+            format!("advisory configuration section '{section}' must be an object")
+        })?;
+        for (name, value) in entries {
+            if value.as_str().is_none_or(|text| text.trim().is_empty()) {
+                return Err(format!(
+                    "advisory configuration entry '{section}.{name}' must be a non-empty string"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_advisor_context_mode(value: Option<&str>) -> Result<(), String> {
+    if value.is_some_and(|value| !matches!(value, "agent-provided" | "full-session")) {
+        return Err("advisor context mode must be 'agent-provided' or 'full-session'".into());
+    }
+    Ok(())
+}
+
 fn validate_path_component(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value == "."
@@ -358,10 +528,6 @@ fn env_value<'a>(envs: &'a [(&str, String)], key: &str, default: &'a str) -> &'a
         .find(|(name, _)| *name == key)
         .map(|(_, value)| value.as_str())
         .unwrap_or(default)
-}
-
-fn helm_set_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace(',', "\\,")
 }
 
 fn output_dir(benchmark: &str, agent: &str, envs: &[(&str, String)]) -> PathBuf {
@@ -397,12 +563,16 @@ fn prepare_output_dir(
         "EVAL_TIMEOUT",
         "EVAL_MODEL_MAX_BUDGET",
         "EVAL_AGENT_REASONING_EFFORT",
-        "EVAL_PROMPT_HINT_MODE",
-        "EVAL_PROMPT_HINT",
+        "EVAL_EXECUTOR_SYSTEM_PROMPT",
+        "EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT",
+        "EVAL_ADVISORY_CONFIG",
         "EVAL_GATEWAY_IMAGE",
-        "ADVISOR_TOOL_DESCRIPTION_VARIANT",
-        "ADVISOR_TOOL_DESCRIPTION",
-        "ADVISORY_PROMPT_POLICY",
+        "EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT",
+        "EVAL_ADVISOR_TOOL_DESCRIPTION",
+        "EVAL_ADVISOR_SYSTEM_PROMPT",
+        "EVAL_ADVISOR_SYSTEM_PROMPT_VARIANT",
+        "EVAL_ADVISOR_CONTEXT_MODE",
+        "EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES",
         "ADVISOR_MODEL",
         "ADVISORY_EXPERIMENT_ID",
         "ADVISOR_LOG_PAYLOADS",
@@ -813,9 +983,6 @@ fn run_job(registry: &str, benchmark: &str, args: &RunArgs) -> Result<(), String
     if let Some(e) = &args.agent_reasoning_effort {
         sets.push(format!("reasoningEffort={e}"));
     }
-    if let Some(mode) = &args.prompt_hint_mode {
-        sets.push(format!("promptHintMode={mode}"));
-    }
     if let Some(image) = &args.gateway_image {
         sets.push(format!("gatewayImage={image}"));
     }
@@ -836,10 +1003,6 @@ fn run_job(registry: &str, benchmark: &str, args: &RunArgs) -> Result<(), String
     for s in &sets {
         helm.push("--set".into());
         helm.push(s.clone());
-    }
-    if let Some(hint) = &args.prompt_hint {
-        helm.push("--set-string".into());
-        helm.push(format!("promptHint={}", helm_set_string(hint)));
     }
 
     // kubectl apply [-n ns] [--dry-run=server] -f -
@@ -901,16 +1064,38 @@ fn run_job(registry: &str, benchmark: &str, args: &RunArgs) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::{
-        CHART_NAME, CHART_VERSION, append_benchmark_result_to, helm_set_string, output_dir,
+        CHART_NAME, CHART_VERSION, append_benchmark_result_to, output_dir, reject_source_conflict,
+        resolve_text_source, validate_advisor_context_mode, validate_advisory_config,
         validate_path_component,
     };
 
     #[test]
-    fn helm_string_values_escape_commas_and_backslashes() {
+    fn direct_prompt_sources_are_exclusive() {
+        let inline = "inline".to_string();
+        let variant = "named".to_string();
         assert_eq!(
-            helm_set_string(r"first, then C:\tmp"),
-            r"first\, then C:\\tmp"
+            resolve_text_source("prompt", Some(&inline), None).unwrap(),
+            Some(inline.clone())
         );
+        assert!(reject_source_conflict("prompt", Some(&inline), Some(&variant)).is_err());
+    }
+
+    #[test]
+    fn advisory_catalog_requires_named_string_maps() {
+        assert!(
+            validate_advisory_config(r#"{"advisor_system_prompts":{"concise":"Be concise."}}"#)
+                .is_ok()
+        );
+        assert!(validate_advisory_config(r#"{"advisor_system_prompts":[]}"#).is_err());
+        assert!(validate_advisory_config(r#"{"unknown":{"x":"y"}}"#).is_err());
+    }
+
+    #[test]
+    fn advisor_context_mode_accepts_only_supported_values() {
+        assert!(validate_advisor_context_mode(None).is_ok());
+        assert!(validate_advisor_context_mode(Some("agent-provided")).is_ok());
+        assert!(validate_advisor_context_mode(Some("full-session")).is_ok());
+        assert!(validate_advisor_context_mode(Some("summary")).is_err());
     }
 
     #[test]
@@ -959,7 +1144,7 @@ mod tests {
         .expect("write model result");
         std::fs::write(
             task_dir.join("config.json"),
-            r#"{"ADVISOR_TOOL_DESCRIPTION_VARIANT":"neutral"}"#,
+            r#"{"EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT":"neutral"}"#,
         )
         .expect("write config");
 
@@ -978,7 +1163,7 @@ mod tests {
         assert_eq!(records[0]["orchestrator_ok"], true);
         assert_eq!(records[1]["orchestrator_ok"], false);
         assert_eq!(
-            records[0]["config"]["ADVISOR_TOOL_DESCRIPTION_VARIANT"],
+            records[0]["config"]["EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT"],
             "neutral"
         );
         std::fs::remove_dir_all(root).expect("remove test output");

@@ -12,6 +12,20 @@ from advisor_service.advisor_runner import get_advice
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+
+class _SuppressHealthAccessLogs(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        return not (
+            isinstance(args, tuple)
+            and len(args) >= 3
+            and args[1] == "GET"
+            and str(args[2]).split("?", 1)[0] == "/health"
+        )
+
+
+logging.getLogger("uvicorn.access").addFilter(_SuppressHealthAccessLogs())
+
 app = FastAPI(title="Advisor HTTP Gateway")
 
 

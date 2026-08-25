@@ -9,10 +9,8 @@
     "platform": "linux/amd64",
     "mode": "compose",
     "local": true,
-    "prompt_hint": {"mode": "none"},
     "advisor": {
-      "model": "aws/claude-opus-4-8",
-      "prompt_policy": "none"
+      "model": "aws/claude-opus-4-8"
     }
   },
   "runs": [
