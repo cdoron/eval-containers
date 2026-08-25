@@ -31,8 +31,8 @@ cat output/aime/codex/0/task/result.json
 Prefer a CLI? `cargo install eval-containers`, then `eval-containers run aime --task-id 0 --agent codex --model openai/gpt-5.4` prints and runs that exact Docker command — every command is a reminder of a plain `docker`/`kubectl` one (`--dry-run` to just print it).
 
 CLI results are written under `output/<benchmark>/<agent>/<task>/`, with an
-append-only cross-run `output/<benchmark>/results.jsonl` history. Optional JSON
-experiment templates and the sequential runner live in
+append-only cross-run `output/<benchmark>/results.jsonl` history. Optional
+single-experiment JSON files and their runner live in
 [`experiments/`](experiments/); ordinary CLI flags remain fully supported.
 
 ## Same eval, on Kubernetes

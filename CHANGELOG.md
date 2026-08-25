@@ -25,7 +25,8 @@ principles 8–10.
   descriptions each support inline text, host text files, or named entries in
   a reusable external JSON catalog. Advisory calls can also use the complete
   exported OpenCode session as context, with explicit non-truncating size
-  limits and recursive advisory inputs removed.
+  limits and recursive advisory inputs removed. Advisor endpoint credentials
+  are configured independently from the executor gateway in `.env`.
 - **The `eval-containers` CLI is now installable as a published artifact.**
   Apache-2.0 licensed, with crates.io metadata (`cargo install eval-containers`)
   and a [`dist`](https://opensource.axo.dev/cargo-dist/)-driven `release.yml`

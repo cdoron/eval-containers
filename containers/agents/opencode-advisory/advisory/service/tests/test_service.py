@@ -251,6 +251,30 @@ class AdvisorServiceTests(unittest.TestCase):
         for name in ("mandatory-first-last.txt", "anthropic-advisory-instructions.txt"):
             self.assertTrue((policies / name).read_text(encoding="utf-8").strip())
 
+    def test_executor_and_advisor_credentials_are_configured_separately(self) -> None:
+        root = Path(__file__).resolve().parents[6]
+        env_example = (root / ".env.example").read_text(encoding="utf-8")
+        shared_compose = (
+            root / "containers" / "compose" / "services.yaml"
+        ).read_text(encoding="utf-8")
+        advisor_compose = (
+            Path(__file__).resolve().parents[3] / "compose.yaml"
+        ).read_text(encoding="utf-8")
+
+        for name in (
+            "OPENAI_API_BASE",
+            "OPENAI_API_KEY",
+            "ADVISOR_BASE_URL",
+            "ADVISOR_API_KEY",
+        ):
+            self.assertIn(f"{name}=", env_example)
+        self.assertIn("OPENAI_API_BASE: ${OPENAI_API_BASE:?}", shared_compose)
+        self.assertIn("OPENAI_API_KEY: ${OPENAI_API_KEY:?}", shared_compose)
+        self.assertIn("ADVISOR_BASE_URL: ${ADVISOR_BASE_URL:-}", advisor_compose)
+        self.assertIn("ADVISOR_API_KEY: ${ADVISOR_API_KEY:-none}", advisor_compose)
+        self.assertNotIn("ADVISOR_BASE_URL=$OPENAI_API_BASE", env_example)
+        self.assertNotIn("ADVISOR_API_KEY=$OPENAI_API_KEY", env_example)
+
     def test_advisor_system_prompt_supports_default_direct_and_named_sources(self) -> None:
         with patch.dict(
             os.environ,
