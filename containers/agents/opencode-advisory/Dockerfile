@@ -42,8 +42,22 @@ cp /opt/agent/advisory/tools/advisory.ts "$HOME/.config/opencode/tools/advisory.
 # opencode's runtime (a separate Bun-compiled binary) ignores NODE_PATH and
 # resolves imports by walking node_modules upward from advisory.ts's own dir.
 ln -sfn "$(npm root -g)" "$HOME/.config/opencode/tools/node_modules"
+instructions=""
+executor_prompt="${EVAL_EXECUTOR_SYSTEM_PROMPT:-}"
+executor_variant="${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}"
+if [ -n "$executor_prompt" ] && [ -n "$executor_variant" ]; then
+  echo "opencode-advisory: choose either EVAL_EXECUTOR_SYSTEM_PROMPT or EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT" >&2
+  exit 2
+fi
+if [ -n "$executor_variant" ]; then
+  executor_prompt="$(python3 /opt/agent/advisory/resolve-config.py executor_system_prompts "$executor_variant")"
+fi
+if [ -n "$executor_prompt" ]; then
+  printf '%s\n' "$executor_prompt" > "$HOME/.config/opencode/executor-system-prompt.txt"
+  instructions=',"instructions":["/home/agent/.config/opencode/executor-system-prompt.txt"]'
+fi
 cat > "$HOME/.config/opencode/opencode.json" <<CONF
-{"\$schema":"https://opencode.ai/config.json","model":"eval-containers/${EVAL_MODEL:-default}","small_model":"eval-containers/${EVAL_MODEL:-default}","disabled_providers":["anthropic","openai"],"provider":{"eval-containers":{"npm":"@ai-sdk/openai-compatible","name":"Eval Containers LiteLLM Proxy","options":{"baseURL":"${OPENAI_BASE_URL:-http://model:4000/v1}","apiKey":"${OPENAI_API_KEY:-sk-proxy}"},"models":{"${EVAL_MODEL:-default}":{"name":"Eval Containers Proxy Model"}}}},"permission":{"edit":"allow","bash":"allow","webfetch":"allow","external_directory":"allow"},"autoshare":false}
+{"\$schema":"https://opencode.ai/config.json","model":"eval-containers/${EVAL_MODEL:-default}","small_model":"eval-containers/${EVAL_MODEL:-default}","disabled_providers":["anthropic","openai"],"provider":{"eval-containers":{"npm":"@ai-sdk/openai-compatible","name":"Eval Containers LiteLLM Proxy","options":{"baseURL":"${OPENAI_BASE_URL:-http://model:4000/v1}","apiKey":"${OPENAI_API_KEY:-sk-proxy}"},"models":{"${EVAL_MODEL:-default}":{"name":"Eval Containers Proxy Model"}}}},"permission":{"edit":"allow","bash":"allow","webfetch":"allow","external_directory":"allow"},"autoshare":false${instructions}}
 CONF
 
 export OPENAI_API_KEY="${OPENAI_API_KEY:-sk-proxy}"
@@ -51,7 +65,6 @@ export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-sk-proxy}"
 export OPENCODE_DISABLE_AUTOUPDATE=1
 export OPENCODE_DISABLE_MODELS_FETCH=1
 export ADVISORY_GATEWAY_URL="${ADVISORY_GATEWAY_URL:-http://advisor:8001}"
-export ADVISOR_TOOL_DESCRIPTION_VARIANT="${ADVISOR_TOOL_DESCRIPTION_VARIANT:-neutral}"
 
 exec opencode run --model "eval-containers/${EVAL_MODEL:-default}" "$TASK"
 E

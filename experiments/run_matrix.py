@@ -16,10 +16,20 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLI = ROOT / "target" / "release" / "eval-containers"
+SOURCE_GROUPS = (
+    {"executor_system_prompt", "executor_system_prompt_file", "executor_system_prompt_variant"},
+    {"advisory_config", "advisory_config_file"},
+    {"tool_description", "tool_description_file", "tool_description_variant"},
+    {"system_prompt", "system_prompt_file", "system_prompt_variant"},
+)
 
 
 def merge(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(left)
+    for group in SOURCE_GROUPS:
+        if group.intersection(right):
+            for key in group:
+                result.pop(key, None)
     for key, value in right.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = merge(result[key], value)
@@ -36,19 +46,115 @@ def validate(run: dict[str, Any], index: int) -> None:
     for key in ("benchmark", "task_id", "agent", "executor_model"):
         if not isinstance(run.get(key), (str, int)) or str(run[key]).strip() == "":
             fail(f"runs[{index}].{key} is required")
-    hint = run.get("prompt_hint", {})
-    mode = hint.get("mode", "none")
-    if mode not in {"none", "default", "custom"}:
-        fail(f"runs[{index}].prompt_hint.mode must be none, default, or custom")
-    if mode == "custom" and not str(hint.get("text", "")).strip():
-        fail(f"runs[{index}] custom prompt hint requires prompt_hint.text")
-    policy = run.get("advisor", {}).get("prompt_policy", "none")
-    if policy not in {"none", "mandatory-first-last"}:
-        fail(f"runs[{index}].advisor.prompt_policy is invalid")
+    validate_source(
+        run,
+        index,
+        "executor system prompt",
+        ("executor_system_prompt", "executor_system_prompt_file", "executor_system_prompt_variant"),
+    )
+    validate_source(
+        run,
+        index,
+        "advisory configuration",
+        ("advisory_config", "advisory_config_file"),
+    )
+    advisor = run.get("advisor", {})
+    validate_source(
+        advisor,
+        index,
+        "advisor tool description",
+        ("tool_description", "tool_description_file", "tool_description_variant"),
+    )
+    validate_source(
+        advisor,
+        index,
+        "advisor system prompt",
+        ("system_prompt", "system_prompt_file", "system_prompt_variant"),
+    )
+    catalog_document: dict[str, Any] | None = None
+    for values, keys in (
+        (run, ("executor_system_prompt_file", "advisory_config_file")),
+        (advisor, ("tool_description_file", "system_prompt_file")),
+    ):
+        for key in keys:
+            if values.get(key):
+                path = Path(values[key])
+                path = path if path.is_absolute() else ROOT / path
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError as error:
+                    fail(f"runs[{index}].{key} cannot be read: {error}")
+                if not text.strip():
+                    fail(f"runs[{index}].{key} is empty")
+                if key == "advisory_config_file":
+                    catalog_document = json.loads(text)
+                    validate_catalog(catalog_document, index)
+    if run.get("advisory_config") is not None:
+        catalog_document = run["advisory_config"]
+        if isinstance(catalog_document, str):
+            catalog_document = json.loads(catalog_document)
+        validate_catalog(catalog_document, index)
+    for variant, section, label in (
+        (run.get("executor_system_prompt_variant"), "executor_system_prompts", "executor system prompt"),
+        (advisor.get("system_prompt_variant"), "advisor_system_prompts", "advisor system prompt"),
+    ):
+        if variant and (
+            catalog_document is None
+            or variant not in catalog_document.get(section, {})
+        ):
+            fail(f"runs[{index}] unknown {label} variant: {variant}")
+    tool_variant = advisor.get("tool_description_variant")
+    built_in_tools = {
+        "conservative", "encouraging", "mandatory", "neutral", "prescriptive", "uncertainty"
+    }
+    if tool_variant and tool_variant not in built_in_tools and (
+        catalog_document is None
+        or tool_variant not in catalog_document.get("tool_descriptions", {})
+    ):
+        fail(f"runs[{index}] unknown advisor tool description variant: {tool_variant}")
+    context_mode = advisor.get("context_mode", "agent-provided")
+    if context_mode not in {"agent-provided", "full-session"}:
+        fail(f"runs[{index}] advisor.context_mode must be agent-provided or full-session")
+    max_bytes = advisor.get("full_context_max_bytes", 0)
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+        fail(f"runs[{index}] advisor.full_context_max_bytes must be a non-negative integer")
     if run.get("advisor") and run["agent"] != "opencode-advisory":
         fail(f"runs[{index}] has advisor settings but agent is not opencode-advisory")
     if run["agent"] == "opencode-advisory" and run.get("mode", "compose") != "compose":
         fail(f"runs[{index}] opencode-advisory currently requires Compose mode for its sidecar")
+
+
+def validate_source(
+    values: dict[str, Any], index: int, label: str, keys: tuple[str, ...]
+) -> None:
+    selected = [key for key in keys if values.get(key) not in (None, "")]
+    if len(selected) > 1:
+        fail(f"runs[{index}] selects multiple sources for {label}: {', '.join(selected)}")
+    for key in selected:
+        value = values[key]
+        if key == "advisory_config" and isinstance(value, dict):
+            continue
+        if not isinstance(value, str) or not value.strip():
+            fail(f"runs[{index}].{key} must be a non-empty string")
+
+
+def validate_catalog(catalog: Any, index: int) -> None:
+    allowed = {
+        "executor_system_prompts",
+        "advisor_system_prompts",
+        "tool_descriptions",
+    }
+    if not isinstance(catalog, dict):
+        fail(f"runs[{index}] advisory configuration must be a JSON object")
+    unknown = set(catalog) - allowed
+    if unknown:
+        fail(f"runs[{index}] advisory configuration has unknown sections: {sorted(unknown)}")
+    for section, entries in catalog.items():
+        if not isinstance(entries, dict):
+            fail(f"runs[{index}] advisory configuration section {section} must be an object")
+        for name, value in entries.items():
+            if not isinstance(value, str) or not value.strip():
+                fail(f"runs[{index}] advisory configuration entry {section}.{name} must be non-empty text")
 
 
 def add(command: list[str], flag: str, value: Any) -> None:
@@ -70,17 +176,26 @@ def run_command(cli: Path, run: dict[str, Any]) -> list[str]:
     if run.get("local", True):
         command.append("--local")
 
-    hint = run.get("prompt_hint", {})
-    add(command, "--prompt-hint-mode", hint.get("mode", "none"))
-    if hint.get("mode") == "custom":
-        add(command, "--prompt-hint", hint.get("text"))
+    add(command, "--executor-system-prompt", run.get("executor_system_prompt"))
+    add(command, "--executor-system-prompt-file", run.get("executor_system_prompt_file"))
+    add(command, "--executor-system-prompt-variant", run.get("executor_system_prompt_variant"))
+    config = run.get("advisory_config")
+    if isinstance(config, dict):
+        config = json.dumps(config, separators=(",", ":"))
+    add(command, "--advisory-config", config)
+    add(command, "--advisory-config-file", run.get("advisory_config_file"))
 
     advisor = run.get("advisor", {})
     add(command, "--advisor-tool-description-variant", advisor.get("tool_description_variant"))
     add(command, "--advisor-tool-description", advisor.get("tool_description"))
-    add(command, "--advisory-prompt-policy", advisor.get("prompt_policy"))
+    add(command, "--advisor-tool-description-file", advisor.get("tool_description_file"))
+    add(command, "--advisor-system-prompt", advisor.get("system_prompt"))
+    add(command, "--advisor-system-prompt-file", advisor.get("system_prompt_file"))
+    add(command, "--advisor-system-prompt-variant", advisor.get("system_prompt_variant"))
     add(command, "--advisor-model", advisor.get("model"))
     add(command, "--advisor-base-url", advisor.get("base_url"))
+    add(command, "--advisor-context-mode", advisor.get("context_mode"))
+    add(command, "--advisor-full-context-max-bytes", advisor.get("full_context_max_bytes"))
     if "log_payloads" in advisor:
         command.append(f"--advisor-log-payloads={str(bool(advisor['log_payloads'])).lower()}")
     return command

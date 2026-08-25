@@ -108,10 +108,6 @@ RUN chmod +x /grade.sh
 COPY --from=entrypoint /eval-materialize-task /eval-materialize-task
 RUN chmod +x /eval-materialize-task
 
-# The generic runner reads this only when EVAL_PROMPT_HINT_MODE=default;
-# packaging a default hint never enables it by itself.
-COPY prompt-hint.txt /opt/benchmark/prompt-hint.txt
-
 RUN cat > /entrypoint.sh <<'ENTRY'
 #!/bin/bash
 /eval-materialize-task

@@ -46,14 +46,22 @@ overrides the env var.
 | `--agent-reasoning-effort <level>` | `EVAL_AGENT_REASONING_EFFORT` | the agent applies it; e.g. `high` |
 | `--task-id <id>` | `EVAL_TASK_ID` | default `0` |
 | `--gateway-image <name>` | `EVAL_GATEWAY_IMAGE` | e.g. `litellm` or `bifrost` |
-| `--prompt-hint-mode <none\|default\|custom>` | `EVAL_PROMPT_HINT_MODE` | default file is opt-in |
-| `--prompt-hint <text>` | `EVAL_PROMPT_HINT` | required for custom mode |
-| `--advisor-tool-description-variant <name>` | `ADVISOR_TOOL_DESCRIPTION_VARIANT` | advisory agent only |
-| `--advisor-tool-description <text>` | `ADVISOR_TOOL_DESCRIPTION` | custom override |
-| `--advisory-prompt-policy <none\|mandatory-first-last>` | `ADVISORY_PROMPT_POLICY` | separate from tool wording |
+| `--executor-system-prompt <text>` | `EVAL_EXECUTOR_SYSTEM_PROMPT` | OpenCode system-context addition |
+| `--executor-system-prompt-file <path>` | reads into `EVAL_EXECUTOR_SYSTEM_PROMPT` | host text file |
+| `--executor-system-prompt-variant <name>` | `EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT` | named external entry |
+| `--advisory-config <json>` | `EVAL_ADVISORY_CONFIG` | inline named catalog |
+| `--advisory-config-file <path>` | reads into `EVAL_ADVISORY_CONFIG` | host JSON file |
+| `--advisor-tool-description-variant <name>` | `EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT` | built-in or external named entry |
+| `--advisor-tool-description <text>` | `EVAL_ADVISOR_TOOL_DESCRIPTION` | free-form wording |
+| `--advisor-tool-description-file <path>` | reads into `EVAL_ADVISOR_TOOL_DESCRIPTION` | host text file |
+| `--advisor-system-prompt <text>` | `EVAL_ADVISOR_SYSTEM_PROMPT` | free-form advisor prompt |
+| `--advisor-system-prompt-file <path>` | reads into `EVAL_ADVISOR_SYSTEM_PROMPT` | host text file |
+| `--advisor-system-prompt-variant <name>` | `EVAL_ADVISOR_SYSTEM_PROMPT_VARIANT` | named external entry |
 | `--advisor-model <model>` | `ADVISOR_MODEL` | independent advisor model |
 | `--advisor-base-url <url>` | `ADVISOR_BASE_URL` | credential stays in `ADVISOR_API_KEY` env |
 | `--advisor-log-payloads[=true\|false]` | `ADVISOR_LOG_PAYLOADS` | off by default; bare flag means true |
+| `--advisor-context-mode <agent-provided\|full-session>` | `EVAL_ADVISOR_CONTEXT_MODE` | full-session exports the active OpenCode conversation |
+| `--advisor-full-context-max-bytes <bytes>` | `EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES` | `0` is unlimited; nonzero overflow fails without truncating |
 | `--experiment-id <id>` | `ADVISORY_EXPERIMENT_ID` | trace/experiment label |
 | `--mode <compose\|container\|job>` | — | default `compose` |
 | `--benchmark-tag <tag>` | `EVAL_BENCHMARK_TAG` | image tag |

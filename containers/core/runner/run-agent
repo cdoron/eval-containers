@@ -26,61 +26,6 @@ if [ -n "${EVAL_AGENT_REASONING_EFFORT:-}" ] && ! grep -q EVAL_AGENT_REASONING_E
   exit 2
 fi
 
-# Prompt additions are runtime choices. A benchmark may ship a default hint at
-# /opt/benchmark/prompt-hint.txt, but merely having that file never changes the
-# task. The selected text is prepended here so the same contract works for every
-# benchmark and agent without putting experiment policy in benchmark Compose.
-prompt_prefix=""
-case "${EVAL_PROMPT_HINT_MODE:-none}" in
-  none|"") ;;
-  default)
-    hint_file="${EVAL_PROMPT_HINT_FILE:-/opt/benchmark/prompt-hint.txt}"
-    if [ ! -s "$hint_file" ]; then
-      echo "run-agent: default prompt hint requested but '$hint_file' is missing or empty" >&2
-      exit 2
-    fi
-    prompt_prefix="$(cat "$hint_file")"
-    ;;
-  custom)
-    if [ -z "${EVAL_PROMPT_HINT:-}" ]; then
-      echo "run-agent: custom prompt hint requested but EVAL_PROMPT_HINT is empty" >&2
-      exit 2
-    fi
-    prompt_prefix="$EVAL_PROMPT_HINT"
-    ;;
-  *)
-    echo "run-agent: invalid EVAL_PROMPT_HINT_MODE '${EVAL_PROMPT_HINT_MODE}' (expected none, default, or custom)" >&2
-    exit 2
-    ;;
-esac
-
-# Advisor usage policy is separate from the tool description. New runs default
-# to no advisor mention.
-advisory_policy="${ADVISORY_PROMPT_POLICY:-none}"
-case "$advisory_policy" in
-  none) ;;
-  mandatory-first-last)
-    policy_file="/opt/agent/advisory/prompt-policies/mandatory-first-last.txt"
-    if [ ! -s "$policy_file" ]; then
-      echo "run-agent: advisory prompt policy requested but '$policy_file' is missing or empty" >&2
-      exit 2
-    fi
-    if [ -n "$prompt_prefix" ]; then prompt_prefix="${prompt_prefix}
-
-$(cat "$policy_file")"; else prompt_prefix="$(cat "$policy_file")"; fi
-    ;;
-  *)
-    echo "run-agent: invalid ADVISORY_PROMPT_POLICY '$advisory_policy' (expected none or mandatory-first-last)" >&2
-    exit 2
-    ;;
-esac
-
-if [ -n "$prompt_prefix" ]; then
-  TASK="${prompt_prefix}
-
-${TASK:-}"
-fi
-
 # stdout/stderr go straight to /output/agent/{stdout,stderr}.log (raw, not via
 # process-compose's JSON log envelope, which breaks verifiers reading stdout).
 # Every value is read from the inherited environment — exported by
@@ -97,8 +42,13 @@ timeout -k 30 "${TIMEOUT:-300}" gosu agent env -i \
   ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}" ANTHROPIC_API_KEY=sk-proxy \
   GOOGLE_GEMINI_BASE_URL="${GOOGLE_GEMINI_BASE_URL:-}" GEMINI_API_KEY=sk-proxy \
   ADVISORY_GATEWAY_URL="${ADVISORY_GATEWAY_URL:-}" \
-  ADVISOR_TOOL_DESCRIPTION_VARIANT="${ADVISOR_TOOL_DESCRIPTION_VARIANT:-}" \
-  ADVISOR_TOOL_DESCRIPTION="${ADVISOR_TOOL_DESCRIPTION:-}" \
+  EVAL_ADVISORY_CONFIG="${EVAL_ADVISORY_CONFIG:-}" \
+  EVAL_EXECUTOR_SYSTEM_PROMPT="${EVAL_EXECUTOR_SYSTEM_PROMPT:-}" \
+  EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT="${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}" \
+  EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT="${EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT:-}" \
+  EVAL_ADVISOR_TOOL_DESCRIPTION="${EVAL_ADVISOR_TOOL_DESCRIPTION:-}" \
+  EVAL_ADVISOR_CONTEXT_MODE="${EVAL_ADVISOR_CONTEXT_MODE:-agent-provided}" \
+  EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES="${EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES:-0}" \
   ADVISORY_EXPERIMENT_ID="${ADVISORY_EXPERIMENT_ID:-}" \
   /run.sh > /output/agent/stdout.log 2> /output/agent/stderr.log || rc=$?
 printf '%s' "$rc" > /output/agent/.exit-code
