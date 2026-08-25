@@ -1,0 +1,12 @@
+{
+  "$schema": "./schema.json",
+  "benchmark": "appworld",
+  "task_id": "6",
+  "agent": "opencode",
+  "executor_model": "aws/claude-haiku-4-5",
+  "gateway_image": "litellm",
+  "platform": "linux/amd64",
+  "mode": "compose",
+  "local": true,
+  "experiment_id": "opencode-baseline"
+}
