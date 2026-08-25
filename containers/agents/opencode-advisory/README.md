@@ -1,149 +1,154 @@
 # opencode-advisory
 
-SST opencode with a native `advisory` tool and an agent-owned HTTP service for
-calling a separately configured advisor model.
-
-## At a glance
+SST OpenCode with a native `advisory` tool and an agent-owned HTTP service that
+calls an independently configured advisor model.
 
 | Field | Value |
-|-------|-------|
+|---|---|
 | Upstream | [sst/opencode](https://github.com/sst/opencode) |
 | Version | `1.4.3` |
-| Install mechanism | npm (`opencode-ai` + `@opencode-ai/plugin`) |
-| Language runtime | Node.js 22 |
+| Runtime | Node.js 22 plus Python 3 for the advisor service |
+| Supported mode | Compose |
 
-## What it does
-
-Same base as [`opencode`](../opencode/README.md), plus one addition: an
-`advisory` tool the model can call to consult a separate advisor model about
-its plan or its final answer before submitting.
-
-The complete runtime flow is:
+## Runtime flow
 
 ```text
-OpenCode advisory tool -> advisor sidecar -> LiteLLM -> advisor model
+executor OpenCode -> advisory tool -> advisor sidecar -> advisor model endpoint
+              \-> executor gateway -> executor model
 ```
 
-The sidecar runs from this same agent image with a different entrypoint. The
-agent-owned [`compose.yaml`](compose.yaml) overlay starts and health-gates it
-automatically whenever Compose mode selects `opencode-advisory`; no service
-from another repository needs to be running on the host.
+The sidecar is built into the same agent image and started with a different
+entrypoint by the agent-owned [`compose.yaml`](compose.yaml) overlay. Compose
+waits for `/health` before starting the runner. The overlay is currently
+Compose-only, so the CLI and experiment validator reject other modes for this
+agent.
 
-The agent-owned sidecar overlay is currently a Compose-mode feature. The JSON
-matrix validator therefore rejects `opencode-advisory` entries using container
-or Kubernetes job mode instead of pretending the advisor service will exist.
+The native tool lives in
+[`advisory/tools/advisory.ts`](advisory/tools/advisory.ts). OpenCode executes
+it directly, so it works with both real-shell benchmarks such as SWE-bench and
+sandboxed execution bridges such as AppWorld.
 
-## How the advisory tool works
+## Configurable text
 
-`advisory` is a native opencode custom tool
-([`advisory/tools/advisory.ts`](advisory/tools/advisory.ts)), not a shell
-command. opencode itself executes it via `fetch()` against
-`$ADVISORY_GATEWAY_URL/advisory`, so the call never depends on whatever
-execution channel a benchmark exposes to the model — it works the same
-whether the benchmark gives the model a real shell (SWE-bench) or a
-sandboxed code-execution bridge with no shell at all (AppWorld).
+Three independent values can be changed for experiments:
 
-At container start, `run.sh` copies `advisory.ts` into
-`$HOME/.config/opencode/tools/` and symlinks a `node_modules` there pointing
-at the global npm install — opencode's actual runtime is a separate
-Bun-compiled binary that resolves imports by walking `node_modules` upward
-from the importing file, not via `NODE_PATH`.
+- executor system-prompt addition;
+- advisor system prompt;
+- advisory tool description.
 
-Tool wording and task-prompt policy are independent. By default the benchmark
-prompt does not mention the advisor. Set `ADVISORY_PROMPT_POLICY=mandatory-first-last`
-only when the task prompt should explicitly require first and last advisory
-calls.
+Each accepts exactly one source:
 
-## Description variants
+1. inline text;
+2. a host text file, read by the CLI before Compose starts; or
+3. a named string from an external JSON catalog.
 
-The tool's description (its docstring, as seen by the model) is loaded at
-call time from [`advisory/tool-descriptions.json`](advisory/tool-descriptions.json), selected by
-`ADVISOR_TOOL_DESCRIPTION_VARIANT` (default `neutral`): `conservative`,
-`encouraging`, `mandatory`, `neutral`, `prescriptive`,
-`uncertainty`. Each represents a separately selectable experiment condition.
+The six built-in tool-description variants remain available without a catalog:
+`conservative`, `encouraging`, `mandatory`, `neutral`, `prescriptive`, and
+`uncertainty`. `neutral` is the default. The advisor system prompt also has a
+built-in `default`. Executor system-prompt injection is off unless selected.
 
-## Configuration
+An external catalog has three named maps:
 
-Executor-agent configuration is passed only to OpenCode:
+```json
+{
+  "executor_system_prompts": {"review-first": "..."},
+  "advisor_system_prompts": {"concise": "..."},
+  "tool_descriptions": {"reviewer": "..."}
+}
+```
 
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `ADVISORY_GATEWAY_URL` | `http://advisor:8001` | Base URL of the advisor sidecar |
-| `ADVISOR_TOOL_DESCRIPTION_VARIANT` | `neutral` | Which JSON description to load |
-| `ADVISOR_TOOL_DESCRIPTION` | unset | Custom description; overrides the named variant |
-| `ADVISORY_PROMPT_POLICY` | `none` | `none` or `mandatory-first-last` task-prompt injection |
-| `ADVISORY_EXPERIMENT_ID` | unset | Forwarded to the advisor for experiment tagging |
+[`experiments/advisory-config.example.json`](../../../experiments/advisory-config.example.json)
+is a complete example. `--advisory-config-file` reads that host file and passes
+the JSON to both containers as `EVAL_ADVISORY_CONFIG`; no extra Compose mount is
+required. Plain Compose users can set the same value with
+`EVAL_ADVISORY_CONFIG="$(cat config.json)"`.
 
-Advisor-service configuration is passed only to the sidecar:
+## CLI configuration
 
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `ADVISOR_BASE_URL` | required | OpenAI-compatible LiteLLM base URL, with or without `/v1` |
-| `ADVISOR_API_KEY` | `none` | Advisor endpoint credential, supplied only at runtime |
-| `ADVISOR_MODEL` | unset | Model used for advisory calls; required before `/advisory` can call the model |
-| `ADVISOR_SERVICE_HOST` | `0.0.0.0` | HTTP bind address |
-| `ADVISOR_SERVICE_PORT` | `8001` | HTTP bind port |
-| `ADVISOR_LOG_PAYLOADS` | `false` | Log advisory request/context and returned advice |
+| Purpose | Inline | Host file | Named catalog entry |
+|---|---|---|---|
+| Executor system prompt | `--executor-system-prompt` | `--executor-system-prompt-file` | `--executor-system-prompt-variant` |
+| Advisor system prompt | `--advisor-system-prompt` | `--advisor-system-prompt-file` | `--advisor-system-prompt-variant` |
+| Tool description | `--advisor-tool-description` | `--advisor-tool-description-file` | `--advisor-tool-description-variant` |
 
-See [`advisory/service/.env.example`](advisory/service/.env.example) for safe
-placeholders. Do not put credentials in the image or commit a real `.env`.
+Named executor or advisor-system variants require `--advisory-config-file` or
+`--advisory-config`. Tool variants first check the external catalog and then
+the six built-ins. Selecting two sources for one value fails before the run.
 
-The executor model still uses the normal eval-containers gateway. The advisor
-service uses `ADVISOR_BASE_URL` and `ADVISOR_MODEL`, so the two models remain
-independently configurable.
+## Advisor context
+
+The default `agent-provided` mode keeps the existing tool contract: OpenCode
+writes a `request` and `context` argument for each advisory call. Set
+`--advisor-context-mode full-session` to make the tool take no arguments and
+instead send:
+
+- the original benchmark task as the advisor request;
+- the configured executor system-prompt addition and resolved advisory tool
+  description;
+- the active OpenCode session in chronological order, including exposed
+  reasoning, tool calls, results, and errors.
+
+The active advisory call is removed to prevent recursion. Earlier advisory
+responses stay in place, but their old request/context inputs are removed so
+the complete session is not recursively duplicated. OpenCode does not expose
+its built-in base system prompt to custom tools, so only the configured
+executor addition can be included.
+
+`--advisor-full-context-max-bytes <n>` sets a serialized byte limit. A value of
+`0` means unlimited. Exceeding a nonzero limit fails the tool call explicitly;
+the context is never summarized or silently truncated.
+
+Service settings remain separate from experimental text:
+
+| Variable / flag | Purpose |
+|---|---|
+| `ADVISOR_BASE_URL` / `--advisor-base-url` | OpenAI-compatible advisor endpoint |
+| `ADVISOR_API_KEY` | Advisor endpoint credential; environment only |
+| `ADVISOR_MODEL` / `--advisor-model` | Advisor model, independent of executor `--model` |
+| `ADVISOR_LOG_PAYLOADS` / `--advisor-log-payloads` | Optional request/response logging |
+| `ADVISORY_EXPERIMENT_ID` / `--experiment-id` | Experiment label attached to advisor spans |
+| `EVAL_ADVISOR_CONTEXT_MODE` / `--advisor-context-mode` | `agent-provided` or `full-session` |
+| `EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES` / `--advisor-full-context-max-bytes` | Full-session size limit; `0` is unlimited |
+
+Do not commit credentials. See
+[`advisory/service/.env.example`](advisory/service/.env.example) for safe
+placeholders.
+
+## Tracing
+
+Executor model calls continue through the normal gateway and keep their normal
+trajectory spans. Every advisor call emits a separate `advisor.chat` span with:
+
+- `eval.call.role=advisor`;
+- advisor input and output messages;
+- requested and resolved advisor model;
+- `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, and total tokens;
+- the selected tool-description and advisor-system-prompt variant names.
+
+This separates advisor usage from executor usage in Phoenix without adding
+pricing. The executor `--max-budget` still does not cap the independently
+configured advisor endpoint.
 
 ## Build and run
 
-For the complete local rebuild matrix—LiteLLM, regular OpenCode,
-`opencode-advisory`, SWE-bench, AppWorld, all four combined images, and every
-advisory variant—follow [`README-RUNS.md`](README-RUNS.md).
-
-Build the agent artifact:
+The complete command set is in [`README-RUNS.md`](README-RUNS.md). A minimal
+run with built-in text is:
 
 ```bash
-./target/release/eval-containers build agent opencode-advisory
-```
-
-The CLI layers this agent's Compose overlay before whichever benchmark Compose
-file is selected. The combined eval runner launches `/run.sh`, while the
-`advisor` sidecar uses the same agent image with the entrypoint overridden to
-`/opt/agent/advisory/service/start.sh`. Compose waits for `/health` before
-starting the runner. Regular agents do not load the overlay and therefore do
-not start the advisor service.
-
-To exercise the sidecar without an evaluation, start the image with safe test
-configuration and then inspect its health endpoint:
-
-```bash
-docker run --rm -d --name opencode-advisor-health -p 8001:8001 \
-  -e ADVISOR_MODEL=test-advisor-model \
-  -e ADVISOR_BASE_URL=http://127.0.0.1:9000 \
-  --entrypoint /opt/agent/advisory/service/start.sh \
-  ghcr.io/exgentic/agents/opencode-advisory:latest
-curl -fsS http://127.0.0.1:8001/health
-docker stop opencode-advisor-health
-```
-
-The health request does not call the model. A real advisory evaluation needs
-`ADVISOR_BASE_URL`, `ADVISOR_API_KEY`, and `ADVISOR_MODEL` in the invoking
-environment or Compose `.env`:
-
-```bash
-ADVISOR_BASE_URL=https://litellm.example.com/v1 \
-ADVISOR_API_KEY="$ADVISOR_API_KEY" \
-ADVISOR_MODEL=provider/advisor-model \
+ADVISOR_BASE_URL="$OPENAI_API_BASE" \
+ADVISOR_API_KEY="$OPENAI_API_KEY" \
 ./target/release/eval-containers run swe-bench \
   --task-id astropy__astropy-12907 \
   --agent opencode-advisory \
-  --model provider/executor-model \
-  --advisor-model provider/advisor-model \
+  --model aws/claude-haiku-4-5 \
+  --gateway-image litellm \
+  --advisor-model aws/claude-opus-4-8 \
   --advisor-tool-description-variant neutral \
-  --advisory-prompt-policy none \
   --local
 ```
 
-The equivalent plain Compose command layers the agent file first and the
-benchmark file second:
+The equivalent Compose stack layers the agent overlay first and benchmark
+Compose file second:
 
 ```bash
 docker compose \
@@ -153,21 +158,13 @@ docker compose \
   up --abort-on-container-exit
 ```
 
-## Optional benchmark hints
-
-AppWorld tasks are graded by the argument passed to
-`apis.supervisor.complete_task()`; calling it with the wrong keyword (or no
-argument, on an answer-seeking task) silently records nothing. That
-clarification is stored in AppWorld's `prompt-hint.txt`. It is off by default
-for every agent. Select it explicitly with `--prompt-hint-mode default`, or use
-`--prompt-hint-mode custom --prompt-hint "..."` on any benchmark.
-
 ## Files
 
-- `Dockerfile` — builds the agent image
-- `compose.yaml` — agent-owned advisor sidecar and runner wiring
-- `advisory/tools/advisory.ts` — the native opencode tool
-- `advisory/tool-descriptions.json` — the named description variants
-- `advisory/prompt-policies/` — opt-in prompt-policy text
-- `advisory/service/` — the FastAPI advisor service, startup script, config example, and tests
-- `README.md` — this file
+- `Dockerfile` — agent image and OpenCode configuration
+- `compose.yaml` — advisor sidecar and runner wiring
+- `advisory/tools/advisory.ts` — native advisory tool
+- `advisory/context/session-context.mjs` — full-session filtering and serialization
+- `advisory/tool-descriptions.json` — six built-in descriptions
+- `advisory/resolve-config.py` — named executor prompt resolver
+- `advisory/service/` — advisor HTTP service, tracing, and tests
+- `advisory/system-prompts/` — reusable executor system-prompt files

@@ -1,0 +1,25 @@
+{
+  "$schema": "./schema.json",
+  "defaults": {
+    "benchmark": "swe-bench",
+    "task_id": "django__django-14011",
+    "agent": "opencode-advisory",
+    "executor_model": "aws/claude-haiku-4-5",
+    "gateway_image": "litellm",
+    "platform": "linux/amd64",
+    "mode": "compose",
+    "local": true,
+    "executor_system_prompt": "Before making substantive changes, inspect the relevant code and tests, then use the advisory tool to review your proposed approach. Consult the advisor again when evidence conflicts with your hypothesis, when an attempted fix fails, and before completing the task. Give the advisor the concrete repository observations, commands, results, errors, constraints, and uncertainties needed to evaluate your next step.",
+    "advisor": {
+      "model": "aws/claude-opus-4-8",
+      "system_prompt": "You are an independent senior software-engineering advisor reviewing another coding agent's work. Analyze the supplied request and context for incorrect assumptions, missing evidence, regressions, and insufficient testing. Recommend the smallest technically sound next step, explain the decisive reason, and identify what evidence would confirm or disprove the recommendation. Do not claim access to files, tools, commands, or conversation history that was not included in the request. Be concise, concrete, and candid.",
+      "tool_description": "Request an independent engineering review of the current plan, hypothesis, implementation decision, failure, test result, or proposed final solution. Include all relevant observations, commands, outputs, errors, constraints, alternatives, and uncertainties in the context. Use the advice to challenge assumptions and choose the next action.",
+      "log_payloads": true
+    }
+  },
+  "runs": [
+    {
+      "experiment_id": "swebench-all-custom-plain-text"
+    }
+  ]
+}

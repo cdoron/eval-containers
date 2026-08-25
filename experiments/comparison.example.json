@@ -7,18 +7,17 @@
     "gateway_image": "litellm",
     "platform": "linux/amd64",
     "mode": "compose",
-    "local": true,
-    "prompt_hint": {"mode": "default"}
+    "local": true
   },
   "runs": [
     {"agent": "opencode"},
     {
       "experiment_id": "opencode-advisory-neutral",
       "agent": "opencode-advisory",
+      "executor_system_prompt_file": "containers/benchmarks/appworld/executor-system-prompt.txt",
       "advisor": {
         "model": "aws/claude-opus-4-8",
-        "tool_description_variant": "neutral",
-        "prompt_policy": "none"
+        "tool_description_variant": "neutral"
       }
     }
   ]

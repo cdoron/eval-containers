@@ -11,15 +11,11 @@
       "mode": "compose",
       "local": true,
       "timeout": 900,
-      "experiment_id": "swebench-mandatory-with-hint",
-      "prompt_hint": {
-        "mode": "custom",
-        "text": "You must use the advisory tool to review your approach before making changes and consult it again before submitting your final solution."
-      },
+      "experiment_id": "swebench-mandatory-system-prompt",
+      "executor_system_prompt_file": "containers/agents/opencode-advisory/advisory/system-prompts/mandatory-first-last.txt",
       "advisor": {
         "model": "aws/claude-opus-4-8",
         "tool_description_variant": "mandatory",
-        "prompt_policy": "mandatory-first-last",
         "log_payloads": false
       }
     }

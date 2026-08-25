@@ -29,14 +29,16 @@
         "max_budget": {"type": "number", "minimum": 0},
         "agent_reasoning_effort": {"type": "string"},
         "experiment_id": {"type": "string"},
-        "prompt_hint": {
-          "type": "object",
-          "properties": {
-            "mode": {"enum": ["none", "default", "custom"]},
-            "text": {"type": "string"}
-          },
-          "additionalProperties": false
+        "executor_system_prompt": {"type": "string", "minLength": 1},
+        "executor_system_prompt_file": {"type": "string", "minLength": 1},
+        "executor_system_prompt_variant": {"type": "string", "minLength": 1},
+        "advisory_config": {
+          "oneOf": [
+            {"$ref": "#/$defs/advisoryConfig"},
+            {"type": "string", "minLength": 2}
+          ]
         },
+        "advisory_config_file": {"type": "string", "minLength": 1},
         "advisor": {
           "type": "object",
           "properties": {
@@ -44,13 +46,31 @@
             "base_url": {"type": "string"},
             "tool_description_variant": {"type": "string"},
             "tool_description": {"type": "string"},
-            "prompt_policy": {"enum": ["none", "mandatory-first-last"]},
+            "tool_description_file": {"type": "string", "minLength": 1},
+            "system_prompt": {"type": "string", "minLength": 1},
+            "system_prompt_file": {"type": "string", "minLength": 1},
+            "system_prompt_variant": {"type": "string", "minLength": 1},
+            "context_mode": {"enum": ["agent-provided", "full-session"]},
+            "full_context_max_bytes": {"type": "integer", "minimum": 0},
             "log_payloads": {"type": "boolean"}
           },
           "additionalProperties": false
         }
       },
       "additionalProperties": false
+    },
+    "advisoryConfig": {
+      "type": "object",
+      "properties": {
+        "executor_system_prompts": {"$ref": "#/$defs/namedTexts"},
+        "advisor_system_prompts": {"$ref": "#/$defs/namedTexts"},
+        "tool_descriptions": {"$ref": "#/$defs/namedTexts"}
+      },
+      "additionalProperties": false
+    },
+    "namedTexts": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
     }
   }
 }

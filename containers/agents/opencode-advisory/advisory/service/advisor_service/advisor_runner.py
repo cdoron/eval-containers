@@ -2,12 +2,30 @@
 
 import json
 import logging
+from numbers import Real
 from typing import Optional
+from uuid import uuid4
 
 from advisor_service import config
 from advisor_service.llm_client import chat_completions
+from advisor_service.telemetry import tracer
 
 logger = logging.getLogger(__name__)
+
+
+def _message(role: str, content: str) -> dict:
+    return {
+        "role": role,
+        "parts": [{"type": "text", "content": content}],
+    }
+
+
+def _usage_value(usage: dict, *names: str) -> Optional[int]:
+    for name in names:
+        value = usage.get(name)
+        if isinstance(value, Real) and not isinstance(value, bool):
+            return int(value)
+    return None
 
 
 async def get_advice(
@@ -27,14 +45,7 @@ async def get_advice(
     if not config.ADVISOR_BASE_URL:
         raise RuntimeError("ADVISOR_BASE_URL is not configured for the advisor service.")
 
-    system_prompt = (
-        "You are a strategic advisor for a coding agent. "
-        "Your job is to give useful, concrete advice to another agent working on a software task. "
-        "Review the request using only the information the agent has provided. "
-        "The request may be a question, plan, proposed solution, hypothesis, or request for review. "
-        "Do not perform the task directly; guide the agent toward the right next action. "
-        "Be concise, actionable, and specific."
-    )
+    system_prompt, system_prompt_variant = config.resolve_advisor_system_prompt()
 
     if not context or not context.strip():
         raise ValueError("Advisory context must be provided.")
@@ -43,12 +54,13 @@ async def get_advice(
         f"Executor context and reasoning so far:\n{context.strip()}"
     )
 
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
     payload = {
         "model": config.ADVISOR_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        "messages": messages,
     }
 
     logger.info(
@@ -76,18 +88,78 @@ async def get_advice(
                 ensure_ascii=False,
             ),
         )
-    response = await chat_completions(
-        base_url=config.ADVISOR_BASE_URL,
-        api_key=config.ADVISOR_API_KEY,
-        payload=payload,
-    )
+    with tracer.start_as_current_span("advisor.chat") as span:
+        span.set_attribute("eval.call.role", "advisor")
+        span.set_attribute("eval.advisory.call_id", str(uuid4()))
+        span.set_attribute("gen_ai.operation.name", "chat")
+        span.set_attribute("gen_ai.system", "openai")
+        span.set_attribute("gen_ai.request.model", config.ADVISOR_MODEL)
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps(
+                [_message(message["role"], message["content"]) for message in messages],
+                ensure_ascii=False,
+            ),
+        )
+        for key, value in (
+            ("eval.experiment.id", experiment_id),
+            ("eval.harness", harness),
+            ("eval.advisor.description_variant", description_variant),
+            ("eval.advisor.system_prompt_variant", system_prompt_variant),
+        ):
+            if value:
+                span.set_attribute(key, value)
 
-    choices = response.get("choices", [])
-    advice = ""
-    if choices:
-        advice = choices[0].get("message", {}).get("content") or ""
-    if not advice.strip():
-        raise RuntimeError("Advisor model returned an empty response.")
+        response = await chat_completions(
+            base_url=config.ADVISOR_BASE_URL,
+            api_key=config.ADVISOR_API_KEY,
+            payload=payload,
+        )
+
+        choices = response.get("choices", [])
+        advice = ""
+        if choices:
+            advice = choices[0].get("message", {}).get("content") or ""
+        if not advice.strip():
+            raise RuntimeError("Advisor model returned an empty response.")
+
+        span.set_attribute(
+            "gen_ai.output.messages",
+            json.dumps([_message("assistant", advice.strip())], ensure_ascii=False),
+        )
+        span.set_attribute(
+            "gen_ai.response.model", response.get("model") or config.ADVISOR_MODEL
+        )
+        if response.get("id"):
+            span.set_attribute("gen_ai.response.id", response["id"])
+        finish_reasons = [
+            choice.get("finish_reason")
+            for choice in choices
+            if choice.get("finish_reason")
+        ]
+        if finish_reasons:
+            span.set_attribute(
+                "gen_ai.response.finish_reasons", json.dumps(finish_reasons)
+            )
+
+        usage = response.get("usage") or {}
+        input_tokens = _usage_value(usage, "prompt_tokens", "input_tokens")
+        output_tokens = _usage_value(usage, "completion_tokens", "output_tokens")
+        total_tokens = _usage_value(usage, "total_tokens")
+        if (
+            total_tokens is None
+            and input_tokens is not None
+            and output_tokens is not None
+        ):
+            total_tokens = input_tokens + output_tokens
+        for key, value in (
+            ("gen_ai.usage.input_tokens", input_tokens),
+            ("gen_ai.usage.output_tokens", output_tokens),
+            ("gen_ai.usage.total_tokens", total_tokens),
+        ):
+            if value is not None:
+                span.set_attribute(key, value)
+
     if config.ADVISOR_LOG_PAYLOADS:
         logger.info("Advisor tool output:\n%s", advice.strip())
     return advice.strip()
