@@ -79,9 +79,10 @@ overrides the env var.
 
 See [Environment variables](env-vars.md) for the full `EVAL_*` namespace.
 
-JSON matrices are an additional convenience, not a replacement for these
-flags. Preview with `python3 experiments/run_matrix.py <config.json>` and add
-`--build --execute` to build unique combinations and run sequentially.
+Single-experiment JSON files are an additional convenience, not a replacement
+for these flags. Preview with
+`python3 experiments/run_experiment.py <config.json>` and add
+`--build --execute` to build the required combination and run it.
 
 ## `build` flags
 

@@ -167,28 +167,24 @@ The JSON names match the CLI concepts:
 ```json
 {
   "$schema": "./schema.json",
-  "runs": [
-    {
-      "benchmark": "swe-bench",
-      "task_id": "django__django-14011",
-      "agent": "opencode-advisory",
-      "executor_model": "aws/claude-haiku-4-5",
-      "gateway_image": "litellm",
-      "mode": "compose",
-      "local": true,
-      "experiment_id": "named-configuration",
-      "advisory_config_file": "experiments/advisory-config.example.json",
-      "executor_system_prompt_variant": "inspect-tools",
-      "advisor": {
-        "model": "aws/claude-opus-4-8",
-        "system_prompt_variant": "strategic-default",
-        "tool_description_variant": "brief-reviewer",
-        "context_mode": "full-session",
-        "full_context_max_bytes": 0,
-        "log_payloads": true
-      }
-    }
-  ]
+  "benchmark": "swe-bench",
+  "task_id": "django__django-14011",
+  "agent": "opencode-advisory",
+  "executor_model": "aws/claude-haiku-4-5",
+  "gateway_image": "litellm",
+  "mode": "compose",
+  "local": true,
+  "experiment_id": "named-configuration",
+  "advisory_config_file": "experiments/advisory-config.example.json",
+  "executor_system_prompt_variant": "inspect-tools",
+  "advisor": {
+    "model": "aws/claude-opus-4-8",
+    "system_prompt_variant": "strategic-default",
+    "tool_description_variant": "brief-reviewer",
+    "context_mode": "full-session",
+    "full_context_max_bytes": 0,
+    "log_payloads": true
+  }
 }
 ```
 
@@ -208,30 +204,30 @@ exposed reasoning and tool calls/results. The active advisory call is removed;
 earlier advice remains without its duplicated old inputs. A nonzero
 `full_context_max_bytes` fails clearly when exceeded and never truncates.
 
-When a run overrides one source in `defaults`, the matrix merge automatically
-removes inherited sibling sources for that same value. Secrets remain in the
-shell, never the experiment file.
+Each JSON file describes exactly one experiment. Use a separate file for each
+configuration; there is no run array or run index. Secrets remain in the shell,
+never the experiment file.
 
 Preview without building or running:
 
 ```bash
-python3 experiments/run_matrix.py \
+python3 experiments/run_experiment.py \
   experiments/experiemnt_with_system_prompt_injection.json
 ```
 
 Run with existing images:
 
 ```bash
-python3 experiments/run_matrix.py \
+python3 experiments/run_experiment.py \
   experiments/experiemnt_with_system_prompt_injection.json \
   --execute
 ```
 
-Add `--build` only when you want the matrix helper to build every required
-combination before execution:
+Add `--build` only when you want the helper to build the required combination
+before execution:
 
 ```bash
-python3 experiments/run_matrix.py \
+python3 experiments/run_experiment.py \
   experiments/experiemnt_with_system_prompt_injection.json \
   --build --execute
 ```

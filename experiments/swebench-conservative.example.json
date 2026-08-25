@@ -8,9 +8,9 @@
   "platform": "linux/amd64",
   "mode": "compose",
   "local": true,
-  "experiment_id": "neutral",
+  "experiment_id": "conservative",
   "advisor": {
     "model": "aws/claude-opus-4-8",
-    "tool_description_variant": "neutral"
+    "tool_description_variant": "conservative"
   }
 }

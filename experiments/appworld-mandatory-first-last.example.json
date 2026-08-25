@@ -8,12 +8,12 @@
   "platform": "linux/amd64",
   "mode": "compose",
   "local": true,
-  "experiment_id": "neutral",
+  "experiment_id": "mandatory-first-last",
   "advisory_config_file": "experiments/advisory-config.example.json",
-  "executor_system_prompt_variant": "appworld-task-completion",
+  "executor_system_prompt_variant": "mandatory-first-last",
   "advisor": {
     "model": "aws/claude-opus-4-8",
-    "tool_description_variant": "neutral",
+    "tool_description_variant": "mandatory",
     "system_prompt_variant": "strategic-default",
     "log_payloads": false
   }
