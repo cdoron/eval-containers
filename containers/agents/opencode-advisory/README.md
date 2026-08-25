@@ -114,6 +114,20 @@ Do not commit credentials. See
 [`advisory/service/.env.example`](advisory/service/.env.example) for safe
 placeholders.
 
+The executor and advisor credentials are independent. Put all four values in
+the repository `.env` when using this agent:
+
+```dotenv
+OPENAI_API_BASE=https://executor.example.com/v1
+OPENAI_API_KEY=replace-with-executor-key
+ADVISOR_BASE_URL=https://advisor.example.com/v1
+ADVISOR_API_KEY=replace-with-advisor-key
+```
+
+The `OPENAI_*` pair is passed only to the normal executor gateway, while the
+`ADVISOR_*` pair is passed only to the advisor sidecar. The pairs may contain
+the same values, but neither pair falls back to the other.
+
 ## Tracing
 
 Executor model calls continue through the normal gateway and keep their normal
@@ -135,8 +149,6 @@ The complete command set is in [`README-RUNS.md`](README-RUNS.md). A minimal
 run with built-in text is:
 
 ```bash
-ADVISOR_BASE_URL="$OPENAI_API_BASE" \
-ADVISOR_API_KEY="$OPENAI_API_KEY" \
 ./target/release/eval-containers run swe-bench \
   --task-id astropy__astropy-12907 \
   --agent opencode-advisory \

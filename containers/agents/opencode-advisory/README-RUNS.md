@@ -15,17 +15,19 @@ set +a
 
 : "${OPENAI_API_KEY:?missing OPENAI_API_KEY}"
 : "${OPENAI_API_BASE:?missing OPENAI_API_BASE}"
+: "${ADVISOR_API_KEY:?missing ADVISOR_API_KEY}"
+: "${ADVISOR_BASE_URL:?missing ADVISOR_BASE_URL}"
 
 export EVAL_BUILD_PLATFORM=linux/amd64
 export SWE_BENCH_TASK_ID=django__django-14011
 export EXECUTOR_MODEL=aws/claude-haiku-4-5
 export ADVISOR_MODEL=aws/claude-opus-4-8
-export ADVISOR_BASE_URL="$OPENAI_API_BASE"
-export ADVISOR_API_KEY="$OPENAI_API_KEY"
 ```
 
-The existing advisor URL and key are reused; the prompt configuration does not
-add credentials or pricing variables.
+`OPENAI_API_BASE` / `OPENAI_API_KEY` belong to the executor gateway.
+`ADVISOR_BASE_URL` / `ADVISOR_API_KEY` belong to the advisor service. They may
+point to the same endpoint, but no value is copied or inherited between them.
+Keep all four in `.env`; experiment JSON deliberately contains no secrets.
 
 ## 2. Rebuild after these changes
 
