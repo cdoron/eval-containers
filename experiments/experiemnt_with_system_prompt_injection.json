@@ -1,0 +1,26 @@
+{
+  "$schema": "./schema.json",
+  "defaults": {
+    "benchmark": "swe-bench",
+    "task_id": "django__django-14011",
+    "agent": "opencode-advisory",
+    "executor_model": "aws/claude-haiku-4-5",
+    "gateway_image": "litellm",
+    "platform": "linux/amd64",
+    "mode": "compose",
+    "local": true,
+    "executor_system_prompt_file": "containers/agents/opencode-advisory/advisory/system-prompts/anthropic-advisory-instructions.txt",
+    "advisor": {
+      "model": "aws/claude-opus-4-8",
+      "tool_description_variant": "prescriptive",
+      "context_mode": "full-session",
+      "full_context_max_bytes": 0,
+      "log_payloads": true
+    }
+  },
+  "runs": [
+    {
+      "experiment_id": "swebench-system-prompt-injection"
+    }
+  ]
+}
