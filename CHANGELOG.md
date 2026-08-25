@@ -18,9 +18,9 @@ principles 8–10.
 
 ### Added
 
-- **JSON experiment matrices and configurable advisory prompts.** Operators can
-  keep using ordinary `eval-containers run` flags or preview/build/run
-  sequential AppWorld and SWE-bench configurations from `experiments/*.json`.
+- **Single-run JSON experiments and configurable advisory prompts.** Operators
+  can keep using ordinary `eval-containers run` flags or preview/build/run one
+  AppWorld or SWE-bench configuration from each `experiments/*.json` file.
   Executor system prompts, advisor system prompts, and advisory tool
   descriptions each support inline text, host text files, or named entries in
   a reusable external JSON catalog. Advisory calls can also use the complete
