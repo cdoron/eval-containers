@@ -8,7 +8,8 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 
 BENCHMARK="" AGENT="" MODEL="" TASK="0" DATASET="" PARALLELISM="" RETRY="" QUEUE=""
-EVAL_MODEL="" NAMESPACE="$NS_DEFAULT" REGISTRY="" PVC="eval-output-pvc" SWEEP_ID="" SUFFIX="" FLAT_IMAGES="true"
+EVAL_MODEL="" NAMESPACE="$NS_DEFAULT" REGISTRY="" PVC="eval-output-pvc" SWEEP_ID="" SUFFIX="" FLAT_IMAGES=""
+BUILD_MODE="oc" PLATFORM="linux/amd64"
 DATASET_MODE=false NO_BUILD=false NO_RUN=false REBUILD=false TEST=false RERUN=false WATCH=false DRY_RUN=false
 while [[ $# -gt 0 ]]; do case "$1" in
   --benchmark) BENCHMARK="$2"; shift 2;; --agent) AGENT="$2"; shift 2;;
@@ -20,6 +21,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --registry) REGISTRY="$2"; shift 2;; --pvc) PVC="$2"; shift 2;;
   --repo-dir) REPO_DIR="$2"; shift 2;; --sweep-id) SWEEP_ID="$2"; shift 2;;
   --flat-images) FLAT_IMAGES="$2"; shift 2;;
+  --build-mode) BUILD_MODE="$2"; shift 2;; --platform) PLATFORM="$2"; shift 2;;
   --rebuild) REBUILD=true; shift;; --no-build) NO_BUILD=true; shift;;
   --no-run) NO_RUN=true; shift;; --test) TEST=true; shift;;
   --test-suffix) TEST=true; SUFFIX="$2"; shift 2;;
@@ -29,6 +31,11 @@ esac; done
 [[ -z "$BENCHMARK" || -z "$AGENT" || -z "$MODEL" ]] && {
   echo "error: --benchmark, --agent and --model are required" >&2; exit 1; }
 log() { echo "[run] $*"; }
+
+# flatImages default follows --build-mode unless explicitly overridden:
+# oc (internal registry, flat ImageStream names) → true; external (a
+# nested-path registry) → false. --flat-images always wins if passed.
+[[ -z "$FLAT_IMAGES" ]] && FLAT_IMAGES=$([[ "$BUILD_MODE" == external ]] && echo false || echo true)
 
 [[ -z "$REGISTRY" ]] && REGISTRY="$(oc_registry "$NAMESPACE")"
 [[ -x "$REPO_DIR/target/release/eval-containers" ]] && PATH="$REPO_DIR/target/release:$PATH"
@@ -44,15 +51,36 @@ RESULT_PREFIX="runs${SUFFIX}"
 if ! $NO_BUILD; then
   log "=== build ($BENCHMARK / $AGENT / $MODEL) ==="
   ISFLAG=(); [[ -n "$SUFFIX" ]] && ISFLAG=(--imagestream-suffix="$SUFFIX")
-  build() { local label="$1" is="$2"; shift 2
+  build() { local label="$1" nested="$2" is="$3"; shift 3
+    if [[ "$BUILD_MODE" == external ]]; then
+      $DRY_RUN && { echo "[dry-run] eval-containers --registry $REGISTRY build $* --platform $PLATFORM"; return; }
+      # Nested path (agents/<name>, evals/<b>--<a>, …) — what an external
+      # registry actually holds; the flat name ($is) is only meaningful for
+      # the OpenShift internal registry's ImageStream naming (--builder oc).
+      # imagetools inspect queries the registry itself (no pull), so this
+      # correctly skips images pushed from another machine/CI — a plain
+      # `docker image inspect` only ever sees this machine's local cache.
+      ! $REBUILD && command docker buildx imagetools inspect "$REGISTRY/${nested}:latest" &>/dev/null && { log "skip $label (exists in registry)"; return; }
+      eval-containers --registry "$REGISTRY" build "$@" --platform "$PLATFORM"
+      # push doesn't take --model (the image is already built and tagged);
+      # strip it from the same arg list the build call above just used.
+      local push_args=() skip_next=false a
+      for a in "$@"; do
+        if $skip_next; then skip_next=false; continue; fi
+        [[ "$a" == "--model" ]] && { skip_next=true; continue; }
+        push_args+=("$a")
+      done
+      eval-containers --registry "$REGISTRY" push "${push_args[@]}"
+      return
+    fi
     $DRY_RUN && { echo "[dry-run] eval-containers build $* --builder oc ${ISFLAG[*]:-}"; return; }
     ! $REBUILD && command oc get istag "${is}:latest" -n "$NAMESPACE" &>/dev/null && { log "skip $label (exists)"; return; }
     eval-containers build "$@" --builder oc ${ISFLAG[@]+"${ISFLAG[@]}"}; }
   ( cd "$REPO_DIR"
-    build "bench" "$(flat "$BENCHMARK")$SUFFIX"        bench "$BENCHMARK"
-    build "agent" "$(flat "$AGENT")$SUFFIX"            agent "$AGENT"
-    build "model" "$(flat "$MODEL")$SUFFIX"            model "$MODEL"
-    build "eval"  "$(flat "$BENCHMARK-$AGENT")$SUFFIX" eval "$BENCHMARK" --agent "$AGENT" --model "$MODEL" )
+    build "bench" "benchmarks/$BENCHMARK"          "$(flat "$BENCHMARK")$SUFFIX"        bench "$BENCHMARK"
+    build "agent" "agents/$AGENT"                  "$(flat "$AGENT")$SUFFIX"            agent "$AGENT"
+    build "model" "models/$MODEL"                  "$(flat "$MODEL")$SUFFIX"            model "$MODEL"
+    build "eval"  "evals/$BENCHMARK--$AGENT"       "$(flat "$BENCHMARK-$AGENT")$SUFFIX" eval "$BENCHMARK" --agent "$AGENT" --model "$MODEL" )
 fi
 $NO_RUN && { log "--no-run: built only, not submitting."; exit 0; }
 
