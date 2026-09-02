@@ -312,12 +312,7 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
         || args.advisor_context_mode.is_some()
         || args.advisor_full_context_max_bytes.is_some()
         || args.experiment_id.is_some();
-    if advisor_options_supplied && agent != "opencode-advisory" {
-        return Err("advisor options require --agent opencode-advisory".into());
-    }
-    if agent == "opencode-advisory" && !matches!(args.mode, Mode::Compose) {
-        return Err("opencode-advisory currently requires --mode compose for its sidecar".into());
-    }
+    validate_advisor_scope(&agent, &args.mode, advisor_options_supplied)?;
 
     // Build the env var set. Direct command-line flags remain the primary API;
     // experiment JSON files invoke these same flags rather than bypassing them.
@@ -508,6 +503,20 @@ fn validate_advisor_context_mode(value: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_advisor_scope(
+    agent: &str,
+    mode: &Mode,
+    advisor_options_supplied: bool,
+) -> Result<(), String> {
+    if advisor_options_supplied && agent != "opencode-advisory" {
+        return Err("advisor options require --agent opencode-advisory".into());
+    }
+    if agent == "opencode-advisory" && !matches!(mode, Mode::Compose) {
+        return Err("opencode-advisory currently requires --mode compose for its sidecar".into());
+    }
+    Ok(())
+}
+
 fn validate_path_component(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value == "."
@@ -658,6 +667,16 @@ fn append_benchmark_result_to(
     })
 }
 
+fn advisor_compose_overlay(registry: &str, agent: &str, local: bool) -> Option<String> {
+    (agent == "opencode-advisory").then(|| {
+        if local {
+            "./containers/agents/opencode-advisory/compose.yaml".to_string()
+        } else {
+            format!("oci://{}", agent_compose_artifact(registry, agent))
+        }
+    })
+}
+
 /// `--mode compose` → docker compose -f compose.yaml up
 fn run_compose(
     registry: &str,
@@ -672,13 +691,7 @@ fn run_compose(
     } else {
         format!("oci://{}", compose_artifact(registry, benchmark))
     };
-    let overlay_ref = (agent == "opencode-advisory").then(|| {
-        if local {
-            "./containers/agents/opencode-advisory/compose.yaml".to_string()
-        } else {
-            format!("oci://{}", agent_compose_artifact(registry, agent))
-        }
-    });
+    let overlay_ref = advisor_compose_overlay(registry, agent, local);
     let project_directory = overlay_ref
         .as_ref()
         .filter(|_| local)
@@ -1064,10 +1077,23 @@ fn run_job(registry: &str, benchmark: &str, args: &RunArgs) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::{
-        CHART_NAME, CHART_VERSION, append_benchmark_result_to, output_dir, reject_source_conflict,
-        resolve_text_source, validate_advisor_context_mode, validate_advisory_config,
-        validate_path_component,
+        CHART_NAME, CHART_VERSION, Mode, advisor_compose_overlay, append_benchmark_result_to,
+        output_dir, reject_source_conflict, resolve_text_source, validate_advisor_context_mode,
+        validate_advisor_scope, validate_advisory_config, validate_path_component,
     };
+
+    fn fleet_agents() -> Vec<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../containers/agents");
+        let mut agents = std::fs::read_dir(root)
+            .expect("read agent catalog")
+            .map(|entry| entry.expect("read agent entry"))
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| !name.starts_with(['.', '_']))
+            .collect::<Vec<_>>();
+        agents.sort();
+        agents
+    }
 
     #[test]
     fn direct_prompt_sources_are_exclusive() {
@@ -1096,6 +1122,62 @@ mod tests {
         assert!(validate_advisor_context_mode(Some("agent-provided")).is_ok());
         assert!(validate_advisor_context_mode(Some("full-session")).is_ok());
         assert!(validate_advisor_context_mode(Some("summary")).is_err());
+    }
+
+    #[test]
+    fn non_advisory_agents_never_load_the_advisor_overlay() {
+        let agents = fleet_agents();
+        assert!(agents.iter().any(|agent| agent == "opencode-advisory"));
+
+        for agent in agents
+            .iter()
+            .filter(|agent| agent.as_str() != "opencode-advisory")
+        {
+            assert_eq!(
+                advisor_compose_overlay("registry.test/team", agent, true),
+                None,
+                "non-advisory agent {agent} unexpectedly loads a local advisor overlay"
+            );
+            assert_eq!(
+                advisor_compose_overlay("registry.test/team", agent, false),
+                None,
+                "non-advisory agent {agent} unexpectedly loads a published advisor overlay"
+            );
+        }
+    }
+
+    #[test]
+    fn advisor_options_are_rejected_for_every_other_agent() {
+        for agent in fleet_agents()
+            .iter()
+            .filter(|agent| agent.as_str() != "opencode-advisory")
+        {
+            for mode in [Mode::Compose, Mode::Container, Mode::Job] {
+                assert!(
+                    validate_advisor_scope(agent, &mode, false).is_ok(),
+                    "ordinary {agent} run was rejected without advisor options"
+                );
+                assert!(
+                    validate_advisor_scope(agent, &mode, true).is_err(),
+                    "advisor options unexpectedly reached non-advisory agent {agent}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn advisor_overlay_is_selected_only_for_opencode_advisory() {
+        assert_eq!(
+            advisor_compose_overlay("registry.test/team", "opencode-advisory", true).as_deref(),
+            Some("./containers/agents/opencode-advisory/compose.yaml")
+        );
+        assert_eq!(
+            advisor_compose_overlay("registry.test/team", "opencode-advisory", false).as_deref(),
+            Some("oci://registry.test/team/agent-opencode-advisory-compose")
+        );
+        assert!(validate_advisor_scope("opencode-advisory", &Mode::Compose, true).is_ok());
+        assert!(validate_advisor_scope("opencode-advisory", &Mode::Container, true).is_err());
+        assert!(validate_advisor_scope("opencode-advisory", &Mode::Job, true).is_err());
     }
 
     #[test]

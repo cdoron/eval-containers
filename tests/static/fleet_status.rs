@@ -85,8 +85,9 @@ fn verdicts_cover_every_read_shape() {
         .output()
         .expect("run fleet-hash.sh");
     assert!(hashes.status.success());
-    let aime = String::from_utf8(hashes.stdout)
-        .unwrap()
+    let hashes = String::from_utf8(hashes.stdout).unwrap();
+    let expected_targets = hashes.lines().count();
+    let aime = hashes
         .lines()
         .find(|l| l.starts_with("benchmark-aime\t"))
         .expect("aime row")
@@ -112,7 +113,11 @@ esac
 "#
     ));
     let rows = fleet_status(&stub);
-    assert_eq!(rows.len(), 153, "one row per static bake target");
+    assert_eq!(
+        rows.len(),
+        expected_targets,
+        "one row per static bake target"
+    );
 
     let (v, want, got) = &rows["ghcr.io/exgentic/benchmarks/aime:latest"];
     assert_eq!((v.as_str(), got), ("fresh", want));

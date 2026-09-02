@@ -579,6 +579,87 @@ fn agent_env_excludes_the_task_id() {
     eprintln!("✓ run-agent env -i allow-list excludes the task id (rule 7)");
 }
 
+/// OpenCode Advisor is an agent-owned extension. Its sidecar, options, and
+/// environment MUST stay out of the shared paths used by every other agent.
+#[test]
+fn advisor_runtime_is_isolated_from_other_agents() {
+    const ADVISOR_PROCESS_ENV: &[&str] = &[
+        "ADVISORY_GATEWAY_URL",
+        "EVAL_ADVISORY_CONFIG",
+        "EVAL_EXECUTOR_SYSTEM_PROMPT",
+        "EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT",
+        "EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION",
+        "EVAL_OPENCODE_BASE_SYSTEM_PROMPT",
+        "EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT",
+        "EVAL_ADVISOR_TOOL_DESCRIPTION",
+        "EVAL_ADVISOR_CONTEXT_MODE",
+        "EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES",
+        "ADVISORY_EXPERIMENT_ID",
+    ];
+    const ADVISOR_SIDECAR_ENV: &[&str] = &[
+        "ADVISOR_BASE_URL",
+        "ADVISOR_API_KEY",
+        "ADVISOR_MODEL",
+        "ADVISOR_LOG_PAYLOADS",
+        "ADVISOR_SERVICE_HOST",
+        "ADVISOR_SERVICE_PORT",
+    ];
+
+    let root = repo_root();
+    for relative in [
+        "containers/compose/services.yaml",
+        "containers/compose/runner.yaml",
+    ] {
+        let shared = fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+        assert!(
+            !shared.lines().any(|line| line.trim() == "advisor:"),
+            "{relative} must not add the advisor sidecar to ordinary Compose runs"
+        );
+        for key in ADVISOR_PROCESS_ENV.iter().chain(ADVISOR_SIDECAR_ENV) {
+            assert!(
+                !shared.contains(key),
+                "{relative} leaks advisor-only variable {key} into every agent"
+            );
+        }
+    }
+
+    let run_agent = fs::read_to_string(root.join("containers/core/runner/run-agent"))
+        .expect("read containers/core/runner/run-agent");
+    let guard_marker = "if [ \"${EVAL_AGENT:-}\" = \"opencode-advisory\" ]; then";
+    let guard_start = run_agent
+        .find(guard_marker)
+        .expect("run-agent must guard advisor variables by the exact agent name");
+    let guard_end = run_agent[guard_start..]
+        .find("\nfi\n")
+        .map(|offset| guard_start + offset + "\nfi\n".len())
+        .expect("advisor environment guard must have a closing fi");
+    let guarded = &run_agent[guard_start..guard_end];
+    let outside_guard = format!("{}{}", &run_agent[..guard_start], &run_agent[guard_end..]);
+    let outside_executable = outside_guard
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for key in ADVISOR_PROCESS_ENV {
+        assert!(
+            guarded.contains(&format!("\"{key}=")),
+            "advisor guard must pass {key} to opencode-advisory"
+        );
+        assert!(
+            !outside_executable.contains(&format!("{key}=")),
+            "advisor-only variable {key} escapes its opencode-advisory guard"
+        );
+    }
+    assert!(
+        run_agent[guard_end..].contains("\"${advisor_env[@]}\""),
+        "run-agent must expand the guarded advisor environment into env -i"
+    );
+
+    eprintln!("✓ advisor sidecar and environment stay isolated from non-advisory agents");
+}
+
 /// `EVAL_AGENT_REASONING_EFFORT`: a supporting agent applies it via `${VAR:+…}`
 /// (unset = default); run-agent forwards it and rejects it for an agent whose
 /// /run.sh doesn't use it.
