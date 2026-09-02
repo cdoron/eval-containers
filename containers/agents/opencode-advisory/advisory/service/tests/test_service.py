@@ -230,6 +230,11 @@ class AdvisorServiceTests(unittest.TestCase):
         dockerfile = (Path(__file__).resolve().parents[3] / "Dockerfile").read_text(
             encoding="utf-8"
         )
+        prepend_plugin = (
+            Path(__file__).resolve().parents[2]
+            / "plugins"
+            / "prepend-executor-system-prompt.ts"
+        ).read_text(encoding="utf-8")
         runner = (
             Path(__file__).resolve().parents[6] / "containers/core/runner/run-agent"
         ).read_text(encoding="utf-8")
@@ -246,10 +251,66 @@ class AdvisorServiceTests(unittest.TestCase):
             'EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT="${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}"',
             runner,
         )
+        self.assertIn(
+            'EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION="${EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION:-append}"',
+            runner,
+        )
+        self.assertIn(
+            'EVAL_OPENCODE_BASE_SYSTEM_PROMPT="${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"',
+            runner,
+        )
+        self.assertIn(
+            'EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION must be append or prepend',
+            dockerfile,
+        )
+        self.assertIn(
+            'prepend-executor-system-prompt.ts',
+            dockerfile,
+        )
+        self.assertIn(
+            'output.system.splice(0, output.system.length,',
+            prepend_plugin,
+        )
 
         policies = Path(__file__).resolve().parents[2] / "system-prompts"
         for name in ("mandatory-first-last.txt", "anthropic-advisory-instructions.txt"):
             self.assertTrue((policies / name).read_text(encoding="utf-8").strip())
+
+    def test_optional_base_prompt_uses_native_opencode_v1_agent_config(self) -> None:
+        root = Path(__file__).resolve().parents[6]
+        dockerfile = (
+            root / "containers/agents/opencode-advisory/Dockerfile"
+        ).read_text(encoding="utf-8")
+        base_prompt = (
+            root / "containers/benchmarks/appworld/opencode-system-prompt.txt"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'base_system_prompt="${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"',
+            dockerfile,
+        )
+        self.assertIn(
+            'agent_config=\',"agent":{"eval-base":{"mode":"primary","prompt":\'',
+            dockerfile,
+        )
+        self.assertIn("opencode_agent_args=(--agent eval-base)", dockerfile)
+        self.assertIn('"${opencode_agent_args[@]}" "$TASK"', dockerfile)
+        self.assertNotIn("opencode debug agent eval-base", dockerfile)
+        self.assertIn('OPENCODE_CONFIG_PATH="$HOME/.config/opencode/opencode.json"', dockerfile)
+        self.assertIn(
+            "replacement OpenCode base system prompt active",
+            dockerfile,
+        )
+        self.assertIn(
+            "You are an agent operating in the AppWorld simulated environment.",
+            base_prompt,
+        )
+        self.assertNotIn(
+            "You are opencode, an interactive CLI tool that helps users with software engineering tasks.",
+            base_prompt,
+        )
+        for coding_prompt_term in ("codebase", "Git", "linting", "code style"):
+            self.assertNotIn(coding_prompt_term, base_prompt)
 
     def test_executor_and_advisor_credentials_are_configured_separately(self) -> None:
         root = Path(__file__).resolve().parents[6]

@@ -1,5 +1,3 @@
-# Advisory tool
-
 You have access to an `advisory` tool backed by a stronger reviewer model. It takes no arguments. When you call the `advisory` tool, the original task and your current conversation history are automatically forwarded. The advisor sees the tool calls you have made, the results you have received, and prior advice in the conversation.
 
 Call the `advisory` tool BEFORE substantive work -- before writing, before committing to an interpretation, and before building on an assumption. If the task requires orientation first (finding files, fetching a source, or seeing what is there), do that, then call the `advisory` tool. Orientation is not substantive work. Writing, editing, and declaring an answer are.
@@ -15,3 +13,6 @@ On tasks longer than a few steps, call the `advisory` tool at least once before 
 Give the advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim (the file says X, the paper states Y), adapt. A passing self-test is not evidence that the advice is wrong -- it is evidence that your test does not check what the advice is checking.
 
 If you have already retrieved data pointing one way and the advisor points another, do not silently switch. Surface the conflict in one more advisory call: "I found X, you suggest Y; which constraint breaks the tie?" The advisor saw your evidence but may have underweighted it; a reconciliation call is cheaper than committing to the wrong branch.
+
+
+If you did not call the advisor at all during the run, you must justify in your output why it wasn't needed.
