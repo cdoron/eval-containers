@@ -128,7 +128,13 @@ else
   else
     SAFE_TASK="$(echo "$TASK" | tr '_' '-')"
   fi
-  JOB="${BENCHMARK}-${AGENT}-task-${SAFE_TASK}${SUFFIX}"; SUB="${RESULT_PREFIX}/${BENCHMARK}/${AGENT}/${MODEL}/${TASK}/${JOB}"
+  JOB="${BENCHMARK}-${AGENT}-task-${SAFE_TASK}${SUFFIX}"
+  if [[ "${#JOB}" -gt 53 ]]; then
+    JOB_HASH="$(printf '%s' "$JOB" | cksum | awk '{printf "%08x", $1}')"
+    JOB_PREFIX_LEN=$((53 - 1 - ${#JOB_HASH}))
+    JOB="${JOB:0:$JOB_PREFIX_LEN}-${JOB_HASH}"
+  fi
+  SUB="${RESULT_PREFIX}/${BENCHMARK}/${AGENT}/${MODEL}/${TASK}/${JOB}"
 fi
 
 [[ -z "$EVAL_MODEL" ]] && EVAL_MODEL="openai/azure/$(echo "$MODEL" | sed 's/--bifrost//;s/--litellm//;s/--portkey//')"
