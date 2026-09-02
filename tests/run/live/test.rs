@@ -345,7 +345,10 @@ fn run_one(benchmark: &str, task_id: &str, agent: &str) -> RunRecord {
     // Every run starts from a clean output dir to avoid stale state
     // from a prior aborted run getting mistaken for the current run's
     // artifact.
-    let cwd_output = PathBuf::from("output").join(benchmark).join(task_id);
+    let cwd_output = PathBuf::from("output")
+        .join(benchmark)
+        .join(agent)
+        .join(task_id);
     let _ = fs::remove_dir_all(&cwd_output);
     // Pre-create output subdirs so crun doesn't fail on missing host paths
     for sub in &["model", "agent", "task"] {

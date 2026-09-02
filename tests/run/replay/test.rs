@@ -83,11 +83,11 @@ async fn replay_compose(
         ReplayMode::FullStack => "tests/run/replay/replay-upstream.yaml",
     });
 
-    // Bind the named `output` volume to `./output/{benchmark}/{task_id}/` so the
+    // Bind the named `output` volume to `./output/{benchmark}/{agent}/{task_id}/` so the
     // runner's `/output/task/result.json` lands on the host (compose/RULES.md
     // rule 18). Pre-create it (else Docker makes it root-owned and the uid-1002
     // agent can't write); clear it so the assertion sees *this* run.
-    let host_output = cwd.join("output").join(benchmark).join(task_id);
+    let host_output = cwd.join("output").join(benchmark).join(agent).join(task_id);
     let _ = fs::remove_dir_all(&host_output);
     fs::create_dir_all(&host_output).expect("failed to create host output dir");
 
@@ -103,10 +103,16 @@ async fn replay_compose(
     // Absolute paths: testcontainers' local client cd's into the FIRST file's
     // parent dir before running `docker compose`, so relative `-f` paths would
     // break — and cwd landing in the benchmark dir is right for its `include:`.
-    let files = [
-        compose_file.to_string_lossy().into_owned(),
-        overlay.to_string_lossy().into_owned(),
-    ];
+    let mut files = Vec::new();
+    if agent == "opencode-advisory" {
+        files.push(
+            cwd.join("containers/agents/opencode-advisory/compose.yaml")
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    files.push(compose_file.to_string_lossy().into_owned());
+    files.push(overlay.to_string_lossy().into_owned());
     let file_refs: Vec<&str> = files.iter().map(String::as_str).collect();
     let mut compose = DockerCompose::with_local_client(file_refs.as_slice());
 
@@ -138,6 +144,12 @@ async fn replay_compose(
         ("REPLAY_OUTPUT", output_str.as_str()),
     ] {
         compose = compose.with_env(key, val);
+    }
+    if agent == "opencode-advisory" {
+        compose = compose
+            .with_env("ADVISOR_MODEL", model)
+            .with_env("ADVISOR_BASE_URL", "http://gateway:4000/openai/v1")
+            .with_env("ADVISOR_API_KEY", "sk-replay-test");
     }
     // Classic path only: point compose at the registry the images were built under.
     if classic {
@@ -182,9 +194,10 @@ async fn replay_compose(
 }
 
 /// Assert the standard output contract: result.json with required fields.
-fn assert_result_valid(benchmark: &str, task_id: &str) {
+fn assert_result_valid(benchmark: &str, agent: &str, task_id: &str) {
     let result_path = Path::new("output")
         .join(benchmark)
+        .join(agent)
         .join(task_id)
         .join("task/result.json");
     assert!(
@@ -220,6 +233,7 @@ fn assert_result_valid(benchmark: &str, task_id: &str) {
     // orchestration.
     let agent_path = Path::new("output")
         .join(benchmark)
+        .join(agent)
         .join(task_id)
         .join("agent/result.json");
     assert!(
@@ -368,25 +382,35 @@ async fn ensure_images(benchmark: &str, agent: &str, mode: ReplayMode) {
     }
 
     for (kind, name) in [("bench", benchmark), ("agent", agent)] {
+        let mut args = vec!["run", "--", "build", kind, name];
+        let platform = common::test_platform();
+        if let Some(platform) = platform.as_deref() {
+            args.extend(["--platform", platform]);
+        }
         let status = Command::new("cargo")
-            .args(["run", "--", "build", kind, name])
+            .args(args)
             .status()
             .unwrap_or_else(|e| panic!("failed to run cargo run -- build {kind}: {e}"));
         assert!(status.success(), "failed to build {kind} image for {name}");
     }
     // --no-pull: bench and agent images are in the BuildKit content store from the
     // steps above; skip the remote manifest check that fails on arm64.
+    let mut args = vec![
+        "run",
+        "--",
+        "build",
+        "eval",
+        benchmark,
+        "--agent",
+        agent,
+        "--no-pull",
+    ];
+    let platform = common::test_platform();
+    if let Some(platform) = platform.as_deref() {
+        args.extend(["--platform", platform]);
+    }
     let status = Command::new("cargo")
-        .args([
-            "run",
-            "--",
-            "build",
-            "eval",
-            benchmark,
-            "--agent",
-            agent,
-            "--no-pull",
-        ])
+        .args(args)
         .status()
         .expect("failed to run cargo run -- build eval");
     assert!(
@@ -413,7 +437,7 @@ macro_rules! replay_test {
         async fn $name() {
             ensure_images($benchmark, $agent, ReplayMode::Lean).await;
             let _compose = replay_compose($benchmark, $agent, $task_id, ReplayMode::Lean).await;
-            assert_result_valid($benchmark, $task_id);
+            assert_result_valid($benchmark, $agent, $task_id);
         }
     };
 }
@@ -421,9 +445,10 @@ macro_rules! replay_test {
 /// Assert the real gateway emitted OTel `gen_ai` spans — the proof it booted,
 /// routed, and instrumented for real. Only exists in `ReplayMode::FullStack`;
 /// otelcol's `file` exporter writes the spans to the host-bound traces.jsonl.
-fn assert_gateway_traces(benchmark: &str, task_id: &str) {
+fn assert_gateway_traces(benchmark: &str, agent: &str, task_id: &str) {
     let traces_path = Path::new("output")
         .join(benchmark)
+        .join(agent)
         .join(task_id)
         .join("traces.jsonl");
     let traces = fs::read_to_string(&traces_path)
@@ -447,9 +472,10 @@ fn assert_gateway_traces(benchmark: &str, task_id: &str) {
 /// missing-usage SDK crash ("Cannot read properties of undefined (reading
 /// 'input_tokens')") — so failing on them is what catches a regression. Requires
 /// a faithful replay upstream (SSE + usage); see containers/models/replay.
-fn assert_agent_succeeded(benchmark: &str, task_id: &str) {
+fn assert_agent_succeeded(benchmark: &str, agent: &str, task_id: &str) {
     let agent_dir = Path::new("output")
         .join(benchmark)
+        .join(agent)
         .join(task_id)
         .join("agent");
     let mut out = fs::read_to_string(agent_dir.join("stdout.log")).unwrap_or_default();
@@ -485,9 +511,9 @@ macro_rules! replay_fullstack_test {
             ensure_images($benchmark, $agent, ReplayMode::FullStack).await;
             let _compose =
                 replay_compose($benchmark, $agent, $task_id, ReplayMode::FullStack).await;
-            assert_result_valid($benchmark, $task_id);
-            assert_gateway_traces($benchmark, $task_id);
-            assert_agent_succeeded($benchmark, $task_id);
+            assert_result_valid($benchmark, $agent, $task_id);
+            assert_gateway_traces($benchmark, $agent, $task_id);
+            assert_agent_succeeded($benchmark, $agent, $task_id);
         }
     };
 }
@@ -618,6 +644,13 @@ replay_test!(
     "appworld",
     "terminus-2",
     "292"
+);
+
+replay_test!(
+    replay_appworld_659_opencode_advisory,
+    "appworld",
+    "opencode-advisory",
+    "659"
 );
 
 replay_test!(

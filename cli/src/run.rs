@@ -39,7 +39,11 @@
 //! registry artifacts.
 
 use clap::{Args, ValueEnum};
-use eval_containers::naming::compose_artifact;
+use eval_containers::naming::{agent_compose_artifact, compose_artifact};
+use serde_json::{Value, json};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Clone, Debug, ValueEnum, Default)]
@@ -85,6 +89,78 @@ pub struct RunArgs {
     /// Task ID within the benchmark (maps to $EVAL_TASK_ID)
     #[arg(long)]
     task_id: Option<String>,
+
+    /// Text appended to the executor's system prompt.
+    #[arg(long)]
+    executor_system_prompt: Option<String>,
+
+    /// Read the executor system-prompt addition from a host text file.
+    #[arg(long)]
+    executor_system_prompt_file: Option<PathBuf>,
+
+    /// Named executor system prompt from --advisory-config-file.
+    #[arg(long)]
+    executor_system_prompt_variant: Option<String>,
+
+    /// Named configuration catalog as inline JSON.
+    #[arg(long)]
+    advisory_config: Option<String>,
+
+    /// Read the named configuration catalog from a host JSON file.
+    #[arg(long)]
+    advisory_config_file: Option<PathBuf>,
+
+    /// Named advisor tool description from tool-descriptions.json.
+    #[arg(long)]
+    advisor_tool_description_variant: Option<String>,
+
+    /// Custom advisor tool description; overrides the named variant.
+    #[arg(long)]
+    advisor_tool_description: Option<String>,
+
+    /// Read the custom advisor tool description from a host text file.
+    #[arg(long)]
+    advisor_tool_description_file: Option<PathBuf>,
+
+    /// Custom advisor system prompt.
+    #[arg(long)]
+    advisor_system_prompt: Option<String>,
+
+    /// Read the advisor system prompt from a host text file.
+    #[arg(long)]
+    advisor_system_prompt_file: Option<PathBuf>,
+
+    /// Named advisor system prompt from --advisory-config-file.
+    #[arg(long)]
+    advisor_system_prompt_variant: Option<String>,
+
+    /// Model used by the advisor service.
+    #[arg(long)]
+    advisor_model: Option<String>,
+
+    /// OpenAI-compatible endpoint used by the advisor service.
+    #[arg(long)]
+    advisor_base_url: Option<String>,
+
+    /// Log advisor request/response payloads. Accepts a bare flag or =true/false.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", require_equals = true)]
+    advisor_log_payloads: Option<bool>,
+
+    /// Advisor context source: agent-provided (default) or full-session.
+    #[arg(long)]
+    advisor_context_mode: Option<String>,
+
+    /// Maximum serialized full-session context size in bytes; 0 means unlimited.
+    #[arg(long)]
+    advisor_full_context_max_bytes: Option<u64>,
+
+    /// Experiment label attached to advisor requests.
+    #[arg(long)]
+    experiment_id: Option<String>,
+
+    /// Gateway image, for example litellm or bifrost.
+    #[arg(long)]
+    gateway_image: Option<String>,
 
     // ---- Container tags (which image to pull) ----
     /// Benchmark image tag (maps to $EVAL_BENCHMARK_TAG)
@@ -161,22 +237,145 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
         .or_else(|| args.benchmark_positional.clone())
         .ok_or_else(|| "benchmark required (positional or --benchmark)".to_string())?;
 
-    // Build the env var set. Every flag maps to EVAL_* per src/RULES.md rule 10.
+    let agent = args
+        .agent
+        .clone()
+        .or_else(|| std::env::var("EVAL_AGENT").ok())
+        .unwrap_or_else(|| "claude-code".to_string());
+    let task_id = args
+        .task_id
+        .clone()
+        .or_else(|| std::env::var("EVAL_TASK_ID").ok())
+        .unwrap_or_else(|| "0".to_string());
+    for (label, value) in [
+        ("benchmark", benchmark.as_str()),
+        ("agent", agent.as_str()),
+        ("task id", task_id.as_str()),
+    ] {
+        validate_path_component(label, value)?;
+    }
+    let volume_name_len = 12 + benchmark.len() + agent.len() + task_id.len();
+    if volume_name_len > 240 {
+        return Err(
+            "benchmark, agent, and task IDs are too long for the Compose output volume name".into(),
+        );
+    }
+    let executor_system_prompt = resolve_text_source(
+        "executor system prompt",
+        args.executor_system_prompt.as_ref(),
+        args.executor_system_prompt_file.as_ref(),
+    )?;
+    reject_source_conflict(
+        "executor system prompt",
+        executor_system_prompt.as_ref(),
+        args.executor_system_prompt_variant.as_ref(),
+    )?;
+    let advisor_tool_description = resolve_text_source(
+        "advisor tool description",
+        args.advisor_tool_description.as_ref(),
+        args.advisor_tool_description_file.as_ref(),
+    )?;
+    reject_source_conflict(
+        "advisor tool description",
+        advisor_tool_description.as_ref(),
+        args.advisor_tool_description_variant.as_ref(),
+    )?;
+    let advisor_system_prompt = resolve_text_source(
+        "advisor system prompt",
+        args.advisor_system_prompt.as_ref(),
+        args.advisor_system_prompt_file.as_ref(),
+    )?;
+    reject_source_conflict(
+        "advisor system prompt",
+        advisor_system_prompt.as_ref(),
+        args.advisor_system_prompt_variant.as_ref(),
+    )?;
+    let advisory_config = resolve_text_source(
+        "advisory configuration",
+        args.advisory_config.as_ref(),
+        args.advisory_config_file.as_ref(),
+    )?;
+    if let Some(document) = advisory_config.as_ref() {
+        validate_advisory_config(document)?;
+    }
+    validate_advisor_context_mode(args.advisor_context_mode.as_deref())?;
+    let advisor_options_supplied = args.advisor_tool_description_variant.is_some()
+        || advisor_tool_description.is_some()
+        || advisor_system_prompt.is_some()
+        || args.advisor_system_prompt_variant.is_some()
+        || executor_system_prompt.is_some()
+        || args.executor_system_prompt_variant.is_some()
+        || advisory_config.is_some()
+        || args.advisor_model.is_some()
+        || args.advisor_base_url.is_some()
+        || args.advisor_log_payloads.is_some()
+        || args.advisor_context_mode.is_some()
+        || args.advisor_full_context_max_bytes.is_some()
+        || args.experiment_id.is_some();
+    validate_advisor_scope(&agent, &args.mode, advisor_options_supplied)?;
+
+    // Build the env var set. Direct command-line flags remain the primary API;
+    // experiment JSON files invoke these same flags rather than bypassing them.
     let mut envs: Vec<(&str, String)> = vec![
         ("EVAL_REGISTRY", registry.to_string()),
         ("EVAL_BENCHMARK", benchmark.clone()),
+        ("EVAL_AGENT", agent.clone()),
+        ("EVAL_TASK_ID", task_id.clone()),
     ];
-    if let Some(ref v) = args.agent {
-        envs.push(("EVAL_AGENT", v.clone()));
-    }
     if let Some(ref v) = args.model {
         envs.push(("EVAL_MODEL", v.clone()));
+        // The shared runner historically used EVAL_GATEWAY_LABEL for the clean
+        // model label. Keep it synchronized with the CLI's --model value.
+        envs.push(("EVAL_GATEWAY_LABEL", v.clone()));
     }
     if let Some(ref v) = args.agent_reasoning_effort {
         envs.push(("EVAL_AGENT_REASONING_EFFORT", v.clone()));
     }
-    if let Some(ref v) = args.task_id {
-        envs.push(("EVAL_TASK_ID", v.clone()));
+    push_optional(
+        &mut envs,
+        "EVAL_EXECUTOR_SYSTEM_PROMPT",
+        &executor_system_prompt,
+    );
+    push_optional(
+        &mut envs,
+        "EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT",
+        &args.executor_system_prompt_variant,
+    );
+    push_optional(&mut envs, "EVAL_ADVISORY_CONFIG", &advisory_config);
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT",
+        &args.advisor_tool_description_variant,
+    );
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_TOOL_DESCRIPTION",
+        &advisor_tool_description,
+    );
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_SYSTEM_PROMPT",
+        &advisor_system_prompt,
+    );
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_SYSTEM_PROMPT_VARIANT",
+        &args.advisor_system_prompt_variant,
+    );
+    push_optional(&mut envs, "ADVISOR_MODEL", &args.advisor_model);
+    push_optional(&mut envs, "ADVISOR_BASE_URL", &args.advisor_base_url);
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_CONTEXT_MODE",
+        &args.advisor_context_mode,
+    );
+    if let Some(value) = args.advisor_full_context_max_bytes {
+        envs.push(("EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES", value.to_string()));
+    }
+    push_optional(&mut envs, "ADVISORY_EXPERIMENT_ID", &args.experiment_id);
+    push_optional(&mut envs, "EVAL_GATEWAY_IMAGE", &args.gateway_image);
+    if let Some(value) = args.advisor_log_payloads {
+        envs.push(("ADVISOR_LOG_PAYLOADS", value.to_string()));
     }
 
     // Container tags
@@ -202,23 +401,287 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
     }
 
     match args.mode {
-        Mode::Compose => run_compose(registry, &benchmark, &envs, args.local, args.dry_run),
-        Mode::Container => run_container(
+        Mode::Compose => run_compose(
             registry,
             &benchmark,
-            &args.agent,
+            &agent,
             &envs,
             args.local,
             args.dry_run,
         ),
-        Mode::Job => run_job(registry, &benchmark, &args, &envs),
+        Mode::Container => run_container(
+            registry,
+            &benchmark,
+            &agent,
+            &envs,
+            args.local,
+            args.dry_run,
+        ),
+        Mode::Job => run_job(registry, &benchmark, &args),
     }
+}
+
+fn push_optional<'a>(envs: &mut Vec<(&'a str, String)>, key: &'a str, value: &Option<String>) {
+    if let Some(value) = value {
+        envs.push((key, value.clone()));
+    }
+}
+
+fn resolve_text_source(
+    label: &str,
+    inline: Option<&String>,
+    file: Option<&PathBuf>,
+) -> Result<Option<String>, String> {
+    if inline.is_some() && file.is_some() {
+        return Err(format!(
+            "choose either inline {label} text or a {label} file, not both"
+        ));
+    }
+    let value = match (inline, file) {
+        (Some(value), None) => Some(value.clone()),
+        (None, Some(path)) => Some(
+            fs::read_to_string(path)
+                .map_err(|e| format!("failed to read {label} file '{}': {e}", path.display()))?,
+        ),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!(),
+    };
+    if value.as_deref().is_some_and(|text| text.trim().is_empty()) {
+        return Err(format!("{label} must not be empty"));
+    }
+    Ok(value)
+}
+
+fn reject_source_conflict(
+    label: &str,
+    direct: Option<&String>,
+    variant: Option<&String>,
+) -> Result<(), String> {
+    if direct.is_some() && variant.is_some() {
+        return Err(format!(
+            "choose either direct {label} text or a named {label} variant, not both"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_advisory_config(document: &str) -> Result<(), String> {
+    let parsed: Value = serde_json::from_str(document)
+        .map_err(|e| format!("advisory configuration is not valid JSON: {e}"))?;
+    let catalog = parsed
+        .as_object()
+        .ok_or_else(|| "advisory configuration must be a JSON object".to_string())?;
+    let allowed = [
+        "executor_system_prompts",
+        "advisor_system_prompts",
+        "tool_descriptions",
+    ];
+    for (section, entries) in catalog {
+        if !allowed.contains(&section.as_str()) {
+            return Err(format!(
+                "unknown advisory configuration section '{section}'"
+            ));
+        }
+        let entries = entries.as_object().ok_or_else(|| {
+            format!("advisory configuration section '{section}' must be an object")
+        })?;
+        for (name, value) in entries {
+            if value.as_str().is_none_or(|text| text.trim().is_empty()) {
+                return Err(format!(
+                    "advisory configuration entry '{section}.{name}' must be a non-empty string"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_advisor_context_mode(value: Option<&str>) -> Result<(), String> {
+    if value.is_some_and(|value| !matches!(value, "agent-provided" | "full-session")) {
+        return Err("advisor context mode must be 'agent-provided' or 'full-session'".into());
+    }
+    Ok(())
+}
+
+fn validate_advisor_scope(
+    agent: &str,
+    mode: &Mode,
+    advisor_options_supplied: bool,
+) -> Result<(), String> {
+    if advisor_options_supplied && agent != "opencode-advisory" {
+        return Err("advisor options require --agent opencode-advisory".into());
+    }
+    if agent == "opencode-advisory" && !matches!(mode, Mode::Compose) {
+        return Err("opencode-advisory currently requires --mode compose for its sidecar".into());
+    }
+    Ok(())
+}
+
+fn validate_path_component(label: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(format!(
+            "invalid {label} '{value}': use only letters, numbers, '.', '_', or '-'"
+        ));
+    }
+    Ok(())
+}
+
+fn env_value<'a>(envs: &'a [(&str, String)], key: &str, default: &'a str) -> &'a str {
+    envs.iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, value)| value.as_str())
+        .unwrap_or(default)
+}
+
+fn output_dir(benchmark: &str, agent: &str, envs: &[(&str, String)]) -> PathBuf {
+    Path::new("output")
+        .join(benchmark)
+        .join(agent)
+        .join(env_value(envs, "EVAL_TASK_ID", "0"))
+}
+
+fn prepare_output_dir(
+    benchmark: &str,
+    agent: &str,
+    envs: &[(&str, String)],
+) -> Result<PathBuf, String> {
+    let dir = output_dir(benchmark, agent, envs);
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|e| {
+            format!(
+                "failed to replace existing task output '{}': {e}",
+                dir.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create host output dir '{}': {e}", dir.display()))?;
+
+    let mut safe = serde_json::Map::new();
+    for key in [
+        "EVAL_BENCHMARK",
+        "EVAL_AGENT",
+        "EVAL_MODEL",
+        "EVAL_TASK_ID",
+        "EVAL_TIMEOUT",
+        "EVAL_MODEL_MAX_BUDGET",
+        "EVAL_AGENT_REASONING_EFFORT",
+        "EVAL_EXECUTOR_SYSTEM_PROMPT",
+        "EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT",
+        "EVAL_ADVISORY_CONFIG",
+        "EVAL_GATEWAY_IMAGE",
+        "EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT",
+        "EVAL_ADVISOR_TOOL_DESCRIPTION",
+        "EVAL_ADVISOR_SYSTEM_PROMPT",
+        "EVAL_ADVISOR_SYSTEM_PROMPT_VARIANT",
+        "EVAL_ADVISOR_CONTEXT_MODE",
+        "EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES",
+        "ADVISOR_MODEL",
+        "ADVISORY_EXPERIMENT_ID",
+        "ADVISOR_LOG_PAYLOADS",
+    ] {
+        if let Some((_, value)) = envs.iter().find(|(name, _)| *name == key) {
+            safe.insert(key.to_string(), Value::String(value.clone()));
+        }
+    }
+    // ADVISOR_BASE_URL is deliberately excluded because URLs can contain
+    // embedded credentials. API keys are never included in envs or manifests.
+    let rendered = serde_json::to_string_pretty(&Value::Object(safe))
+        .map_err(|e| format!("failed to serialize run config: {e}"))?;
+    fs::write(dir.join("config.json"), format!("{rendered}\n"))
+        .map_err(|e| format!("failed to write run config: {e}"))?;
+    Ok(dir)
+}
+
+fn read_json_or_null(path: PathBuf) -> Value {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(Value::Null)
+}
+
+fn value_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
+}
+
+fn append_benchmark_result(
+    benchmark: &str,
+    dir: &Path,
+    orchestrator_ok: bool,
+) -> Result<(), String> {
+    append_benchmark_result_to(Path::new("output"), benchmark, dir, orchestrator_ok)
+}
+
+fn append_benchmark_result_to(
+    output_root: &Path,
+    benchmark: &str,
+    dir: &Path,
+    orchestrator_ok: bool,
+) -> Result<(), String> {
+    fs::write(
+        dir.join("orchestrator.json"),
+        format!("{}\n", json!({"orchestrator_ok": orchestrator_ok})),
+    )
+    .map_err(|e| format!("failed to write runtime status: {e}"))?;
+
+    let benchmark_dir = output_root.join(benchmark);
+    let task = read_json_or_null(dir.join("task/result.json"));
+    let agent_result = read_json_or_null(dir.join("agent/result.json"));
+    let model_result = read_json_or_null(dir.join("model/result.json"));
+    let config = read_json_or_null(dir.join("config.json"));
+    let record = json!({
+        "benchmark": value_string(&task, "benchmark").unwrap_or(benchmark),
+        "task_id": value_string(&task, "task_id")
+            .or_else(|| value_string(&config, "EVAL_TASK_ID"))
+            .unwrap_or("unknown"),
+        "agent": value_string(&agent_result, "agent")
+            .or_else(|| value_string(&config, "EVAL_AGENT"))
+            .unwrap_or("unknown"),
+        "executor_model": value_string(&model_result, "model")
+            .or_else(|| value_string(&config, "EVAL_MODEL"))
+            .unwrap_or("unknown"),
+        "orchestrator_ok": orchestrator_ok,
+        "output_dir": dir.to_string_lossy(),
+        "task": task,
+        "agent_result": agent_result,
+        "model_result": model_result,
+        "config": config,
+    });
+    let index = benchmark_dir.join("results.jsonl");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&index)
+        .map_err(|e| format!("failed to open results history '{}': {e}", index.display()))?;
+    writeln!(file, "{record}").map_err(|e| {
+        format!(
+            "failed to append results history '{}': {e}",
+            index.display()
+        )
+    })
+}
+
+fn advisor_compose_overlay(registry: &str, agent: &str, local: bool) -> Option<String> {
+    (agent == "opencode-advisory").then(|| {
+        if local {
+            "./containers/agents/opencode-advisory/compose.yaml".to_string()
+        } else {
+            format!("oci://{}", agent_compose_artifact(registry, agent))
+        }
+    })
 }
 
 /// `--mode compose` → docker compose -f compose.yaml up
 fn run_compose(
     registry: &str,
     benchmark: &str,
+    agent: &str,
     envs: &[(&str, String)],
     local: bool,
     dry_run: bool,
@@ -228,19 +691,41 @@ fn run_compose(
     } else {
         format!("oci://{}", compose_artifact(registry, benchmark))
     };
+    let overlay_ref = advisor_compose_overlay(registry, agent, local);
+    let project_directory = overlay_ref
+        .as_ref()
+        .filter(|_| local)
+        .map(|_| format!("./containers/benchmarks/{benchmark}"));
     let env_str = envs
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join(" ");
-    eprintln!("$ {env_str} docker compose -f {compose_ref} up -y --abort-on-container-exit");
+    let project_arg = project_directory
+        .as_ref()
+        .map(|dir| format!(" --project-directory {dir}"))
+        .unwrap_or_default();
+    let overlay_arg = overlay_ref
+        .as_ref()
+        .map(|overlay| format!(" -f {overlay}"))
+        .unwrap_or_default();
+    eprintln!(
+        "$ {env_str} docker compose{project_arg}{overlay_arg} -f {compose_ref} up -y --abort-on-container-exit"
+    );
     if dry_run {
         // For compose, dry-run means show the resolved manifest (which
         // includes all `${EVAL_*:-default}` interpolations) and stop.
         // `docker compose config` is the canonical render command.
         eprintln!("(--dry-run: showing resolved compose config, not running)");
         let mut cmd = Command::new("docker");
-        cmd.arg("compose").arg("-f").arg(&compose_ref).arg("config");
+        cmd.arg("compose");
+        if let Some(dir) = &project_directory {
+            cmd.arg("--project-directory").arg(dir);
+        }
+        if let Some(overlay) = &overlay_ref {
+            cmd.arg("-f").arg(overlay);
+        }
+        cmd.arg("-f").arg(&compose_ref).arg("config");
         for (k, v) in envs {
             cmd.env(k, v);
         }
@@ -253,22 +738,23 @@ fn run_compose(
         return Ok(());
     }
 
-    // `services.yaml`'s `output` volume binds to `./output/{benchmark}/{task}`
+    // `services.yaml` binds to ./output/{benchmark}/{agent}/{task}.
     // (compose/RULES.md rule 18) via a `driver_opts.device:` path — unlike a
     // short-syntax host bind, that form does not auto-create the directory,
     // so pre-create it here (as the invoking user, so the agent's uid-1002
     // process can still write into it — Docker would otherwise make it
     // root-owned on first mount).
-    let task_id = envs
-        .iter()
-        .find(|(k, _)| *k == "EVAL_TASK_ID")
-        .map(|(_, v)| v.as_str())
-        .unwrap_or("0");
-    std::fs::create_dir_all(format!("output/{benchmark}/{task_id}"))
-        .map_err(|e| format!("failed to create host output dir: {e}"))?;
+    let output_dir = prepare_output_dir(benchmark, agent, envs)?;
 
     let mut cmd = Command::new("docker");
-    cmd.arg("compose").arg("-f").arg(&compose_ref);
+    cmd.arg("compose");
+    if let Some(dir) = &project_directory {
+        cmd.arg("--project-directory").arg(dir);
+    }
+    if let Some(overlay) = &overlay_ref {
+        cmd.arg("-f").arg(overlay);
+    }
+    cmd.arg("-f").arg(&compose_ref);
     // `-y`: a published `oci://` stack prompts to confirm (and echoes) the
     // variables it injects; assume yes so the run stays non-interactive.
     cmd.arg("up").arg("-y").arg("--abort-on-container-exit");
@@ -278,6 +764,7 @@ fn run_compose(
     let status = cmd
         .status()
         .map_err(|e| format!("failed to run docker compose: {e}"))?;
+    append_benchmark_result(benchmark, &output_dir, status.success())?;
     if !status.success() {
         return Err(format!("docker compose failed with {status}"));
     }
@@ -298,14 +785,11 @@ fn run_compose(
 fn run_container(
     registry: &str,
     benchmark: &str,
-    agent: &Option<String>,
+    agent: &str,
     envs: &[(&str, String)],
     local: bool,
     dry_run: bool,
 ) -> Result<(), String> {
-    let agent = agent
-        .clone()
-        .ok_or_else(|| "--agent is required in container mode".to_string())?;
     // Per-task benchmarks bake one eval image per task: the bundle layers onto the
     // task-aware lean base (evals/<b>-<task>--<a>). Shared-env benchmarks use the
     // task-less name. Per-task resolution lives in the eval-base build context,
@@ -325,9 +809,9 @@ fn run_container(
     // name (the helper lowercases the task id for Docker). (benchmarks/RULES.md 24f.)
     let image = match (per_task, task_id.as_deref()) {
         (true, Some(t)) => eval_containers::naming::eval_task_standalone_image(
-            registry, benchmark, t, &agent, "latest",
+            registry, benchmark, t, agent, "latest",
         ),
-        _ => eval_containers::naming::eval_standalone_image(registry, benchmark, &agent, "latest"),
+        _ => eval_containers::naming::eval_standalone_image(registry, benchmark, agent, "latest"),
     };
     if local {
         // Build the bundle by layering the in-process gateway/otelcol/process-
@@ -340,9 +824,9 @@ fn run_container(
         // single source of truth; we override only the eval-base context here.
         let combination = match (per_task, task_id.as_deref()) {
             (true, Some(t)) => {
-                eval_containers::naming::eval_task_image(registry, benchmark, t, &agent, "latest")
+                eval_containers::naming::eval_task_image(registry, benchmark, t, agent, "latest")
             }
-            _ => eval_containers::naming::eval_image(registry, benchmark, &agent, "latest"),
+            _ => eval_containers::naming::eval_image(registry, benchmark, agent, "latest"),
         };
         let spec = crate::build::bake_print(
             "eval-standalone",
@@ -388,12 +872,20 @@ fn run_container(
         .map(|(k, v)| format!("-e {k}={v}"))
         .collect::<Vec<_>>()
         .join(" ");
-    eprintln!("$ docker run --rm {env_str} -v output:/output {image}");
+    let output_dir = output_dir(benchmark, agent, envs);
+    eprintln!(
+        "$ docker run --rm {env_str} -v {}:/output {image}",
+        output_dir.display()
+    );
     if dry_run {
         eprintln!("(--dry-run: stopping before docker run)");
         return Ok(());
     }
 
+    let output_dir = prepare_output_dir(benchmark, agent, envs)?;
+    let absolute_output = std::env::current_dir()
+        .map_err(|e| format!("failed to resolve current directory: {e}"))?
+        .join(&output_dir);
     let mut cmd = Command::new("docker");
     cmd.arg("run").arg("--rm");
     for (k, v) in envs {
@@ -409,11 +901,13 @@ fn run_container(
             cmd.arg("-e").arg(var);
         }
     }
-    cmd.arg("-v").arg("output:/output");
+    cmd.arg("-v")
+        .arg(format!("{}:/output", absolute_output.display()));
     cmd.arg(&image);
     let status = cmd
         .status()
         .map_err(|e| format!("failed to docker run: {e}"))?;
+    append_benchmark_result(benchmark, &output_dir, status.success())?;
     if !status.success() {
         return Err(format!("docker run failed with {status}"));
     }
@@ -433,12 +927,7 @@ fn run_container(
 /// See .agents/benchmarks/RULES.md.
 ///
 /// Cluster `eval-secrets` Secret still provides upstream credentials.
-fn run_job(
-    registry: &str,
-    benchmark: &str,
-    args: &RunArgs,
-    _envs: &[(&str, String)],
-) -> Result<(), String> {
+fn run_job(registry: &str, benchmark: &str, args: &RunArgs) -> Result<(), String> {
     let agent = args.agent.as_deref().unwrap_or("claude-code");
     let task = args.task_id.as_deref().unwrap_or("0");
 
@@ -485,7 +974,7 @@ fn run_job(
         helm.push(ov.clone());
     }
 
-    // Per-run axes → --set (one each, so values containing commas are safe).
+    // Runtime axes → --set (one each, so values containing commas are safe).
     // --model is the <provider>/<model> handle → the gateway's EVAL_MODEL; the
     // chart derives the runner's clean MODEL label from it (last path segment).
     let mut sets: Vec<String> = vec![
@@ -506,6 +995,9 @@ fn run_job(
     }
     if let Some(e) = &args.agent_reasoning_effort {
         sets.push(format!("reasoningEffort={e}"));
+    }
+    if let Some(image) = &args.gateway_image {
+        sets.push(format!("gatewayImage={image}"));
     }
     if let Some(t) = args.timeout {
         sets.push(format!("timeout={t}"));
@@ -584,7 +1076,180 @@ fn run_job(
 
 #[cfg(test)]
 mod tests {
-    use super::{CHART_NAME, CHART_VERSION};
+    use super::{
+        CHART_NAME, CHART_VERSION, Mode, advisor_compose_overlay, append_benchmark_result_to,
+        output_dir, reject_source_conflict, resolve_text_source, validate_advisor_context_mode,
+        validate_advisor_scope, validate_advisory_config, validate_path_component,
+    };
+
+    fn fleet_agents() -> Vec<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../containers/agents");
+        let mut agents = std::fs::read_dir(root)
+            .expect("read agent catalog")
+            .map(|entry| entry.expect("read agent entry"))
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| !name.starts_with(['.', '_']))
+            .collect::<Vec<_>>();
+        agents.sort();
+        agents
+    }
+
+    #[test]
+    fn direct_prompt_sources_are_exclusive() {
+        let inline = "inline".to_string();
+        let variant = "named".to_string();
+        assert_eq!(
+            resolve_text_source("prompt", Some(&inline), None).unwrap(),
+            Some(inline.clone())
+        );
+        assert!(reject_source_conflict("prompt", Some(&inline), Some(&variant)).is_err());
+    }
+
+    #[test]
+    fn advisory_catalog_requires_named_string_maps() {
+        assert!(
+            validate_advisory_config(r#"{"advisor_system_prompts":{"concise":"Be concise."}}"#)
+                .is_ok()
+        );
+        assert!(validate_advisory_config(r#"{"advisor_system_prompts":[]}"#).is_err());
+        assert!(validate_advisory_config(r#"{"unknown":{"x":"y"}}"#).is_err());
+    }
+
+    #[test]
+    fn advisor_context_mode_accepts_only_supported_values() {
+        assert!(validate_advisor_context_mode(None).is_ok());
+        assert!(validate_advisor_context_mode(Some("agent-provided")).is_ok());
+        assert!(validate_advisor_context_mode(Some("full-session")).is_ok());
+        assert!(validate_advisor_context_mode(Some("summary")).is_err());
+    }
+
+    #[test]
+    fn non_advisory_agents_never_load_the_advisor_overlay() {
+        let agents = fleet_agents();
+        assert!(agents.iter().any(|agent| agent == "opencode-advisory"));
+
+        for agent in agents
+            .iter()
+            .filter(|agent| agent.as_str() != "opencode-advisory")
+        {
+            assert_eq!(
+                advisor_compose_overlay("registry.test/team", agent, true),
+                None,
+                "non-advisory agent {agent} unexpectedly loads a local advisor overlay"
+            );
+            assert_eq!(
+                advisor_compose_overlay("registry.test/team", agent, false),
+                None,
+                "non-advisory agent {agent} unexpectedly loads a published advisor overlay"
+            );
+        }
+    }
+
+    #[test]
+    fn advisor_options_are_rejected_for_every_other_agent() {
+        for agent in fleet_agents()
+            .iter()
+            .filter(|agent| agent.as_str() != "opencode-advisory")
+        {
+            for mode in [Mode::Compose, Mode::Container, Mode::Job] {
+                assert!(
+                    validate_advisor_scope(agent, &mode, false).is_ok(),
+                    "ordinary {agent} run was rejected without advisor options"
+                );
+                assert!(
+                    validate_advisor_scope(agent, &mode, true).is_err(),
+                    "advisor options unexpectedly reached non-advisory agent {agent}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn advisor_overlay_is_selected_only_for_opencode_advisory() {
+        assert_eq!(
+            advisor_compose_overlay("registry.test/team", "opencode-advisory", true).as_deref(),
+            Some("./containers/agents/opencode-advisory/compose.yaml")
+        );
+        assert_eq!(
+            advisor_compose_overlay("registry.test/team", "opencode-advisory", false).as_deref(),
+            Some("oci://registry.test/team/agent-opencode-advisory-compose")
+        );
+        assert!(validate_advisor_scope("opencode-advisory", &Mode::Compose, true).is_ok());
+        assert!(validate_advisor_scope("opencode-advisory", &Mode::Container, true).is_err());
+        assert!(validate_advisor_scope("opencode-advisory", &Mode::Job, true).is_err());
+    }
+
+    #[test]
+    fn output_path_contains_benchmark_agent_and_task() {
+        let envs = [("EVAL_TASK_ID", "task-7".to_string())];
+        assert_eq!(
+            output_dir("appworld", "opencode-advisory", &envs),
+            std::path::Path::new("output/appworld/opencode-advisory/task-7")
+        );
+    }
+
+    #[test]
+    fn output_path_components_reject_traversal() {
+        assert!(validate_path_component("task id", "../old-task").is_err());
+        assert!(validate_path_component("task id", "safe_task-1.2").is_ok());
+    }
+
+    #[test]
+    fn benchmark_history_appends_result_and_config() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "eval-containers-history-{}-{suffix}",
+            std::process::id()
+        ));
+        let task_dir = root.join("appworld/opencode-advisory/6");
+        std::fs::create_dir_all(task_dir.join("task")).expect("create task output");
+        std::fs::create_dir_all(task_dir.join("agent")).expect("create agent output");
+        std::fs::create_dir_all(task_dir.join("model")).expect("create model output");
+        std::fs::write(
+            task_dir.join("task/result.json"),
+            r#"{"task_id":"6","benchmark":"appworld","reward":1,"passed":true}"#,
+        )
+        .expect("write task result");
+        std::fs::write(
+            task_dir.join("agent/result.json"),
+            r#"{"agent":"opencode-advisory"}"#,
+        )
+        .expect("write agent result");
+        std::fs::write(
+            task_dir.join("model/result.json"),
+            r#"{"model":"aws/claude-haiku-4-5"}"#,
+        )
+        .expect("write model result");
+        std::fs::write(
+            task_dir.join("config.json"),
+            r#"{"EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT":"neutral"}"#,
+        )
+        .expect("write config");
+
+        append_benchmark_result_to(&root, "appworld", &task_dir, true)
+            .expect("append first result");
+        append_benchmark_result_to(&root, "appworld", &task_dir, false)
+            .expect("append second result");
+
+        let history =
+            std::fs::read_to_string(root.join("appworld/results.jsonl")).expect("read history");
+        let records: Vec<serde_json::Value> = history
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("valid history JSON"))
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["orchestrator_ok"], true);
+        assert_eq!(records[1]["orchestrator_ok"], false);
+        assert_eq!(
+            records[0]["config"]["EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT"],
+            "neutral"
+        );
+        std::fs::remove_dir_all(root).expect("remove test output");
+    }
 
     // `--mode job` (non-local) renders `oci://…/charts/{CHART_NAME}` pinned to
     // {CHART_VERSION}; both MUST track benchmarks/_chart/Chart.yaml, or the

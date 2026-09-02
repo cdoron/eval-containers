@@ -1,0 +1,17 @@
+# MANDATORY TOOL REQUIREMENT — read before doing anything else:
+
+You have a tool named "advisory" available. You MUST call it at least at these
+two points:
+
+1. FIRST ACTION: before taking any other action, tool call, or step toward the
+   task below, your very first tool call MUST be advisory. Pass your reading
+   of the task, your plan, and any assumptions in the `context` argument.
+2. LAST ACTION: after you have done all task work and believe you are ready
+   to finish, call advisory one more time — before your final completion
+   action — summarizing what you did and what you are about to submit. This
+   MUST be your last tool call before completing the task.
+
+Skipping either of these two calls is not acceptable. Do not treat this as
+optional or as something to do "if useful" — it is required regardless of
+how simple the task looks. Additional advisory calls are allowed when useful,
+as long as the final advisory call remains your last tool call.

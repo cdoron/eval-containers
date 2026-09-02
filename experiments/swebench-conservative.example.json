@@ -1,0 +1,16 @@
+{
+  "$schema": "./schema.json",
+  "benchmark": "swe-bench",
+  "task_id": "astropy__astropy-12907",
+  "agent": "opencode-advisory",
+  "executor_model": "aws/claude-haiku-4-5",
+  "gateway_image": "litellm",
+  "platform": "linux/amd64",
+  "mode": "compose",
+  "local": true,
+  "experiment_id": "conservative",
+  "advisor": {
+    "model": "aws/claude-opus-4-8",
+    "tool_description_variant": "conservative"
+  }
+}

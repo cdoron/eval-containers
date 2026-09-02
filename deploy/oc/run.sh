@@ -116,8 +116,25 @@ else
   # sympy__sympy-24066) fails that check outright, independent of the
   # chart's own metadata.name sanitization. SUB keeps the real $TASK (the PVC
   # output path); only $JOB is sanitized.
-  SAFE_TASK="$(echo "$TASK" | tr '_' '-')"
-  JOB="${BENCHMARK}-${AGENT}-task-${SAFE_TASK}${SUFFIX}"; SUB="${RESULT_PREFIX}/${BENCHMARK}/${AGENT}/${MODEL}/${TASK}/${JOB}"
+  #
+  # SWE-bench task ids are "<org>__<repo>-<n>"; when org==repo (django,
+  # sympy, scikit-learn, ...) a plain tr '_' '-' doubles the name
+  # (scikit-learn--scikit-learn-9288) and the full $JOB can exceed Helm's
+  # 53-char release-name cap. Collapse that exact redundancy — org==repo is
+  # the only case this fires on, so no information is lost.
+  ORG_PART="${TASK%%__*}"; REST_PART="${TASK#*__}"
+  if [[ "$REST_PART" == "$ORG_PART"-* ]]; then
+    SAFE_TASK="${ORG_PART}-${REST_PART#"$ORG_PART"-}"
+  else
+    SAFE_TASK="$(echo "$TASK" | tr '_' '-')"
+  fi
+  JOB="${BENCHMARK}-${AGENT}-task-${SAFE_TASK}${SUFFIX}"
+  if [[ "${#JOB}" -gt 53 ]]; then
+    JOB_HASH="$(printf '%s' "$JOB" | cksum | awk '{printf "%08x", $1}')"
+    JOB_PREFIX_LEN=$((53 - 1 - ${#JOB_HASH}))
+    JOB="${JOB:0:$JOB_PREFIX_LEN}-${JOB_HASH}"
+  fi
+  SUB="${RESULT_PREFIX}/${BENCHMARK}/${AGENT}/${MODEL}/${TASK}/${JOB}"
 fi
 
 [[ -z "$EVAL_MODEL" ]] && EVAL_MODEL="openai/azure/$(echo "$MODEL" | sed 's/--bifrost//;s/--litellm//;s/--portkey//')"

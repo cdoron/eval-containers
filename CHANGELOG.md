@@ -18,6 +18,15 @@ principles 8–10.
 
 ### Added
 
+- **Single-run JSON experiments and configurable advisory prompts.** Operators
+  can keep using ordinary `eval-containers run` flags or preview/build/run one
+  AppWorld or SWE-bench configuration from each `experiments/*.json` file.
+  Executor system prompts, advisor system prompts, and advisory tool
+  descriptions each support inline text, host text files, or named entries in
+  a reusable external JSON catalog. Advisory calls can also use the complete
+  exported OpenCode session as context, with explicit non-truncating size
+  limits and recursive advisory inputs removed. Advisor endpoint credentials
+  are configured independently from the executor gateway in `.env`.
 - **The `eval-containers` CLI is now installable as a published artifact.**
   Apache-2.0 licensed, with crates.io metadata (`cargo install eval-containers`)
   and a [`dist`](https://opensource.axo.dev/cargo-dist/)-driven `release.yml`
@@ -55,6 +64,15 @@ principles 8–10.
 
 ### Changed
 
+- **OpenCode Advisory configuration is now runtime-selectable and agent-owned.**
+  The old prompt-hint and prompt-policy interfaces were replaced by one
+  system-prompt source model. Executor prompts, advisor prompts, and tool
+  descriptions can be free text, host files, or external named variants.
+  Advisor calls emit separate role-tagged input/output, model, and token-usage
+  spans. Regular agents do not load the advisor Compose sidecar.
+- **Evaluation outputs are now agent-aware.** CLI runs write detailed artifacts
+  to `output/<benchmark>/<agent>/<task>/` and append result/configuration
+  summaries to benchmark-wide `results.jsonl` history for comparison.
 - **The k8s `job` mode is now a self-contained Helm chart.** A benchmark
   is selected with `--set benchmark=<x>` instead of
   `-f benchmarks/<x>/values.yaml`; the 4 benchmarks with bespoke topology

@@ -48,6 +48,26 @@ baked, shared artifact that ignores `EVAL_MODEL`. Both are pull-not-build; see
 | `EVAL_MODEL_MAX_BUDGET` | Hard cap on model spend (USD) for this run | `1` |
 | `EVAL_AGENT_REASONING_EFFORT` | Reasoning effort the agent applies (`low`/`medium`/`high`; some also accept `xhigh`/`max`) | agent default |
 | `EVAL_REGISTRY` | Registry to pull from | `ghcr.io/exgentic` |
+| `EVAL_EXECUTOR_SYSTEM_PROMPT` | Inline executor system-prompt addition | unset |
+| `EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT` | Named executor prompt in `EVAL_ADVISORY_CONFIG` | unset |
+| `EVAL_ADVISORY_CONFIG` | JSON catalog with named executor prompts, advisor prompts, and tool descriptions | unset |
+| `EVAL_ADVISOR_SYSTEM_PROMPT` | Inline advisor system prompt | built-in prompt |
+| `EVAL_ADVISOR_SYSTEM_PROMPT_VARIANT` | Named advisor prompt in `EVAL_ADVISORY_CONFIG` | unset |
+| `EVAL_ADVISOR_TOOL_DESCRIPTION` | Inline advisory-tool description | unset |
+| `EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT` | Built-in or external named tool description | `neutral` |
+| `EVAL_ADVISOR_CONTEXT_MODE` | Advisor input source: `agent-provided` or `full-session` | `agent-provided` |
+| `EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES` | Serialized full-session limit; overflow fails, `0` is unlimited | `0` |
+
+Advisor-specific runtime variables are loaded only by the
+`opencode-advisory` Compose overlay. Experimental prompt and description
+settings use the `EVAL_*` variables above. Service settings are
+`ADVISOR_MODEL`, `ADVISOR_BASE_URL`, `ADVISOR_API_KEY`,
+`ADVISORY_EXPERIMENT_ID`, and `ADVISOR_LOG_PAYLOADS`. `OPENAI_API_BASE` and
+`OPENAI_API_KEY` configure the executor gateway; the `ADVISOR_*` endpoint and
+key configure only the advisor sidecar. Set both pairs explicitly in `.env`;
+neither pair inherits from the other. Advisor calls emit separate role-tagged
+spans with their input/output messages, model, and input/output token usage.
+Experiment JSON deliberately excludes secrets.
 
 Supported agents: **codex, claude-code, claude-code-rtk, aider, cline,
 copilot-cli, openclaw**. Setting it for any other agent **fails loud** (the run

@@ -1,0 +1,18 @@
+{
+  "appworld-659-opencode-advisory.traces.jsonl": {
+    "model": "aws/claude-opus-4-8",
+    "model_version": "claude-opus-4-8",
+    "agent_version": "1.4.3",
+    "benchmark_data_revision": "refs/convert/parquet",
+    "captured_at": "2026-08-23T12:17:01Z",
+    "release_tag": "unreleased-pr-6",
+    "source_commit": "2ce4a56c3ed08b4e46e194efbf817e001e0aeb75",
+    "capture_kind": "out-of-band-pr",
+    "findings": [
+      "yellow: token_runaway",
+      "yellow: high_turn_count",
+      "yellow: retry_storm",
+      "yellow: fetch_required_but_no_tool_calls"
+    ]
+  }
+}

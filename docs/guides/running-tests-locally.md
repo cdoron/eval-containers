@@ -215,11 +215,12 @@ cargo test --test check structural_validation
 docker build -t local/aime containers/benchmarks/aime/
 
 # 3. Run one task with a real model
+mkdir -p output/aime/codex/0
 TASK_ID=0 EVAL_AGENT=codex EVAL_MODEL=openai/gpt-4.1-mini \
   docker compose -f containers/benchmarks/aime/compose.yaml up --abort-on-container-exit
 
 # 4. Check the output
-cat output/aime/0/task/result.json
+cat output/aime/codex/0/task/result.json
 ```
 
 **Before pushing a PR:**

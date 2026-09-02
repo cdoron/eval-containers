@@ -1,0 +1,20 @@
+{
+  "$schema": "./schema.json",
+  "benchmark": "appworld",
+  "task_id": "6",
+  "agent": "opencode-advisory",
+  "executor_model": "aws/claude-haiku-4-5",
+  "gateway_image": "litellm",
+  "platform": "linux/amd64",
+  "mode": "compose",
+  "local": true,
+  "experiment_id": "mandatory-first-last",
+  "advisory_config_file": "experiments/advisory-config.example.json",
+  "executor_system_prompt_variant": "mandatory-first-last",
+  "advisor": {
+    "model": "aws/claude-opus-4-8",
+    "tool_description_variant": "mandatory",
+    "system_prompt_variant": "strategic-default",
+    "log_payloads": false
+  }
+}

@@ -66,10 +66,10 @@ pub fn execute(args: ReportArgs) -> Result<(), String> {
 /// Walk the output directory to find all evaluation results.
 /// Supports layouts:
 ///   ./output/task/result.json                           (single eval)
-///   ./output/<benchmark>/<task-id>/task/result.json     (multiple evals)
+///   ./output/<benchmark>/<agent>/<task>/task/result.json
 fn find_results(dir: &Path) -> Vec<EvalResult> {
     let mut results = Vec::new();
-    walk_for_results(dir, &mut results, 3);
+    walk_for_results(dir, &mut results, 4);
     results
 }
 
