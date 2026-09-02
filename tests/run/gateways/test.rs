@@ -349,10 +349,9 @@ fn static_litellm_accepts_capability_hint_for_opaque_model_handles() {
         "the gateway must not rely on a deployment-level whitelist that LiteLLM ignores"
     );
 
-    let template = std::fs::read_to_string(
-        root.join("containers/models/litellm/config.yaml.template"),
-    )
-    .expect("read litellm model config template");
+    let template =
+        std::fs::read_to_string(root.join("containers/models/litellm/config.yaml.template"))
+            .expect("read litellm model config template");
     assert!(
         template.contains("drop_params: true"),
         "litellm must drop parameters rejected by its stale capability table"
