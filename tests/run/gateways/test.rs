@@ -330,6 +330,35 @@ fn static_gateway_render_substitutes_every_template_var() {
     }
 }
 
+#[test]
+fn static_litellm_accepts_capability_hint_for_opaque_model_handles() {
+    let root = test_support::repo_root();
+    let start = std::fs::read_to_string(root.join("containers/gateways/litellm/start"))
+        .expect("read litellm gateway start script");
+
+    assert!(
+        start.contains("EVAL_MODEL_BASE") && start.contains("base_model"),
+        "litellm must accept a capability hint for opaque EVAL_MODEL handles"
+    );
+    assert!(
+        start.matches("${_model_capability_params}").count() == 2,
+        "wire-override and native-pin routes must pass the capability hint"
+    );
+    assert!(
+        !start.contains("allowed_openai_params"),
+        "the gateway must not rely on a deployment-level whitelist that LiteLLM ignores"
+    );
+
+    let template = std::fs::read_to_string(
+        root.join("containers/models/litellm/config.yaml.template"),
+    )
+    .expect("read litellm model config template");
+    assert!(
+        template.contains("drop_params: true"),
+        "litellm must drop parameters rejected by its stale capability table"
+    );
+}
+
 /// Distinct `${NAME}` placeholder names in `s`.
 fn placeholder_vars(s: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
