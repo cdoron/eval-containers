@@ -68,6 +68,10 @@ and avoids a new bind mount for each prompt. The equivalent environment values
 are `EVAL_EXECUTOR_SYSTEM_PROMPT`, `EVAL_ADVISOR_SYSTEM_PROMPT`, and
 `EVAL_ADVISOR_TOOL_DESCRIPTION`.
 
+`EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION` controls where the executor addition is
+placed. It defaults to `append`; set it to `prepend` to place the same text
+before OpenCode's built-in system prompt.
+
 For named entries, pass a catalog with `--advisory-config-file`:
 
 ```json

@@ -1,0 +1,62 @@
+## Advisor usage
+
+You have access to an `advisory` tool that consults a separate, substantially larger and more capable model.
+
+Use the advisor as a planning and review tool during AppWorld tasks.
+
+### Required advisor calls
+
+You MUST call the `advisory` tool at the following points:
+
+1. **After initial orientation, before taking actions that change the simulated environment.**
+
+   You may first inspect the available apps, API documentation, or other information needed to understand the task.
+
+   After you understand which APIs are relevant, call `advisory` before performing the first state-changing action.
+
+   State-changing actions include operations such as:
+
+   * modifying or deleting data,
+   * sending or accepting requests,
+   * changing alarms or settings,
+   * creating or updating items,
+   * transferring money,
+   * or otherwise changing application state.
+
+2. **When you are stuck or your approach is not working.**
+
+   Call `advisory` when:
+
+   * the same or similar error occurs more than once,
+   * authentication or API usage continues to fail,
+   * several attempts have not produced progress,
+   * you are unsure which API or approach is correct,
+   * or you are considering changing to a substantially different approach.
+
+   Do not repeatedly try small variations of a failing approach without consulting the advisor.
+
+3. **Before completing the task.**
+
+   Before calling `apis.supervisor.complete_task()`, call `advisory` to review whether:
+
+   * the user's requested changes were actually completed,
+   * any required conditions were missed,
+   * the interpretation of the task is correct,
+   * and the current application state matches the user's request.
+
+   Only after this review should you call `apis.supervisor.complete_task()`.
+
+### How to use advisor responses
+
+After the advisor responds:
+
+* Consider its reasoning and recommendations before choosing your next action.
+* Use the advisor response together with the actual AppWorld API results.
+* Do not blindly follow advice that conflicts with observed API state.
+* Continue working on the task after the advisor call unless the task is already ready for final completion.
+
+### Important
+
+Calling the advisor is mandatory at the checkpoints above.
+
+Do not decide to skip a required advisor call simply because the next AppWorld action seems obvious or is directly suggested by the previous tool output.
