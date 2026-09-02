@@ -12,6 +12,10 @@
 # reuses OPENAI_API_KEY. No EVAL_API_* umbrella alias — see RULES rule 3.
 model_list: ${MODEL_LIST}
 litellm_settings:
+  # LiteLLM's capability table rejects tool_choice for opaque upstream model
+  # handles such as Azure/gpt-5-nano-2025-08-07. Drop only parameters LiteLLM
+  # considers unsupported; tools themselves remain in the forwarded request.
+  drop_params: true
   # otel -> gen_ai.* OTLP spans for the otelcol sidecar; eval_logger ->
   # /output/trajectory.jsonl + result.json for models/replay. Fires on every request.
   callbacks: ["otel", "eval_logger.eval_logger_instance"]
