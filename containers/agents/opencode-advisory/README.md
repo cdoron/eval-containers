@@ -36,6 +36,13 @@ Three independent values can be changed for experiments:
 - advisor system prompt;
 - advisory tool description.
 
+An optional base-system-prompt replacement is configured separately with
+`EVAL_OPENCODE_BASE_SYSTEM_PROMPT`. When non-empty, the runner creates and
+selects a native OpenCode V1 `agent.eval-base.prompt`; when empty, OpenCode's
+built-in base prompt remains unchanged. This is replacement configuration,
+whereas `EVAL_EXECUTOR_SYSTEM_PROMPT` remains the independently appended or
+prepended experiment instruction.
+
 Each accepts exactly one source:
 
 1. inline text;
@@ -74,6 +81,8 @@ required. Plain Compose users can set the same value with
 Named executor or advisor-system variants require `--advisory-config-file` or
 `--advisory-config`. Tool variants first check the external catalog and then
 the six built-ins. Selecting two sources for one value fails before the run.
+Set `EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION=prepend` to place the configured
+executor addition before OpenCode's built-in prompt; the default is `append`.
 
 ## Advisor context
 

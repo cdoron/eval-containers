@@ -1,4 +1,3 @@
-# Advisory tool
 
 You have access to an `advisory` tool backed by a stronger reviewer model. It takes no arguments. When you call the `advisory` tool, the original task and your current conversation history are automatically forwarded. The advisor sees the tool calls you have made, the results you have received, and prior advice in the conversation.
 
@@ -10,7 +9,7 @@ Also call the `advisory` tool:
 - When stuck -- errors recurring, approach not converging, or results not fitting.
 - When considering a change of approach.
 
-On tasks longer than a few steps, call the `advisory` tool at least once before committing to an approach and once before declaring done. On short reactive tasks where the next action is dictated by tool output you just read, you do not need to keep calling -- the advisor adds most of its value on the first call, before the approach crystallizes.
+call the `advisory` tool at least once before committing to an approach and once before declaring done. On short reactive tasks where the next action is dictated by tool output you just read, you do not need to keep calling -- the advisor adds most of its value on the first call, before the approach crystallizes.
 
 Give the advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim (the file says X, the paper states Y), adapt. A passing self-test is not evidence that the advice is wrong -- it is evidence that your test does not check what the advice is checking.
 

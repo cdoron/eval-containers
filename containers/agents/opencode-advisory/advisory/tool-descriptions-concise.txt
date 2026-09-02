@@ -1,0 +1,10 @@
+{
+  "tool_descriptions": {
+    "conservative": "Consult an advisor: a separate, substantially larger and more capable language model that can provide a second opinion on the task you are solving. Use it only when consultation is very likely to materially improve an important decision or result.",
+    "encouraging": "Consult an advisor: a separate, substantially larger and more capable language model that can provide a second opinion on the task you are solving. Use it whenever consultation could plausibly improve your reasoning, approach, or final result.",
+    "mandatory": "Consult an advisor: a separate, substantially larger and more capable language model that can provide a second opinion on the task you are solving. You MUST use it when stuck, before consequential decisions, and before completing the task.",
+    "neutral": "Consult an advisor: a separate, substantially larger and more capable language model that can provide a second opinion on the task you are solving.",
+    "prescriptive": "Consult an advisor: a separate, substantially larger and more capable language model that can provide a second opinion on the task you are solving. Use it after repeated failures, when approaches or evidence conflict, before accepting weaker verification, and before concluding the task is complete.",
+    "uncertainty": "Consult an advisor: a separate, substantially larger and more capable language model that can provide a second opinion on the task you are solving. Use it whenever you are meaningfully uncertain about the task, evidence, approach, next action, or whether the result is complete."
+  }
+}
