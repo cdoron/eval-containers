@@ -358,6 +358,21 @@ fn static_litellm_accepts_capability_hint_for_opaque_model_handles() {
     );
 }
 
+#[test]
+fn static_litellm_accepts_provider_native_api_key_header() {
+    let root = test_support::repo_root();
+    let start = std::fs::read_to_string(root.join("containers/gateways/litellm/start"))
+        .expect("read litellm gateway start script");
+
+    assert!(
+        start.contains("EVAL_MODEL_API_KEY_HEADER")
+            && start.contains("EVAL_MODEL_API_KEY_ENV")
+            && start.contains("extra_headers")
+            && start.contains("os.environ/"),
+        "litellm must support a provider-native API-key header without embedding its value"
+    );
+}
+
 /// Distinct `${NAME}` placeholder names in `s`.
 fn placeholder_vars(s: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
