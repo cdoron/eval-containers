@@ -220,7 +220,7 @@ class AdvisorServiceTests(unittest.TestCase):
         ):
             self.assertIn(field, tool_source)
         self.assertIn("return requestAdvice(args.request, args.context)", tool_source)
-        self.assertIn("return requestAdvice(task, context)", tool_source)
+        self.assertIn("return requestAdvice(FULL_SESSION_REQUEST, context)", tool_source)
         self.assertIn("process.env.ADVISORY_EXPERIMENT_ID", tool_source)
         self.assertIn("process.env.EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT", tool_source)
         self.assertIn("process.env.EVAL_ADVISOR_TOOL_DESCRIPTION", tool_source)
@@ -258,6 +258,12 @@ class AdvisorServiceTests(unittest.TestCase):
         self.assertIn(
             'EVAL_OPENCODE_BASE_SYSTEM_PROMPT="${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"',
             runner,
+        )
+        self.assertIn(
+            'EVAL_MODEL_CONTEXT_LIMIT="${EVAL_MODEL_CONTEXT_LIMIT:-}"', runner
+        )
+        self.assertIn(
+            'EVAL_MODEL_OUTPUT_LIMIT="${EVAL_MODEL_OUTPUT_LIMIT:-}"', runner
         )
         self.assertIn(
             'EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION must be append or prepend',
@@ -311,6 +317,22 @@ class AdvisorServiceTests(unittest.TestCase):
         )
         for coding_prompt_term in ("codebase", "Git", "linting", "code style"):
             self.assertNotIn(coding_prompt_term, base_prompt)
+
+    def test_optional_custom_model_limits_are_written_to_opencode_config(self) -> None:
+        dockerfile = (Path(__file__).resolve().parents[3] / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('model_context_limit="${EVAL_MODEL_CONTEXT_LIMIT:-}"', dockerfile)
+        self.assertIn('model_output_limit="${EVAL_MODEL_OUTPUT_LIMIT:-}"', dockerfile)
+        self.assertIn(
+            ',"limit":{"context":',
+            dockerfile,
+        )
+        self.assertIn(
+            "EVAL_MODEL_OUTPUT_LIMIT must be smaller than EVAL_MODEL_CONTEXT_LIMIT",
+            dockerfile,
+        )
 
     def test_executor_and_advisor_credentials_are_configured_separately(self) -> None:
         root = Path(__file__).resolve().parents[6]

@@ -50,6 +50,9 @@ base_system_prompt="${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"
 executor_prompt="${EVAL_EXECUTOR_SYSTEM_PROMPT:-}"
 executor_variant="${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}"
 executor_position="${EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION:-append}"
+model_context_limit="${EVAL_MODEL_CONTEXT_LIMIT:-}"
+model_output_limit="${EVAL_MODEL_OUTPUT_LIMIT:-}"
+model_limits=""
 case "$executor_position" in
   append|prepend) ;;
   *) echo "opencode-advisory: EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION must be append or prepend" >&2; exit 2;;
@@ -76,8 +79,21 @@ if [ -n "$base_system_prompt" ]; then
   agent_config=',"agent":{"eval-base":{"mode":"primary","prompt":'"$base_system_prompt_json"'}}'
   opencode_agent_args=(--agent eval-base)
 fi
+if [ -n "$model_context_limit" ] || [ -n "$model_output_limit" ]; then
+  case "$model_context_limit:$model_output_limit" in
+    *[!0-9:]*|:|*:|0:*|*:0)
+      echo "opencode-advisory: EVAL_MODEL_CONTEXT_LIMIT and EVAL_MODEL_OUTPUT_LIMIT must both be positive integers" >&2
+      exit 2
+      ;;
+  esac
+  if [ "$model_output_limit" -ge "$model_context_limit" ]; then
+    echo "opencode-advisory: EVAL_MODEL_OUTPUT_LIMIT must be smaller than EVAL_MODEL_CONTEXT_LIMIT" >&2
+    exit 2
+  fi
+  model_limits=',"limit":{"context":'"$model_context_limit"',"output":'"$model_output_limit"'}'
+fi
 cat > "$HOME/.config/opencode/opencode.json" <<CONF
-{"\$schema":"https://opencode.ai/config.json","model":"eval-containers/${EVAL_MODEL:-default}","small_model":"eval-containers/${EVAL_MODEL:-default}","disabled_providers":["anthropic","openai"],"provider":{"eval-containers":{"npm":"@ai-sdk/openai-compatible","name":"Eval Containers LiteLLM Proxy","options":{"baseURL":"${OPENAI_BASE_URL:-http://model:4000/v1}","apiKey":"${OPENAI_API_KEY:-sk-proxy}"},"models":{"${EVAL_MODEL:-default}":{"name":"Eval Containers Proxy Model"}}}},"permission":{"edit":"allow","bash":"allow","webfetch":"allow","external_directory":"allow"},"autoshare":false${agent_config}${instructions}${plugins}}
+{"\$schema":"https://opencode.ai/config.json","model":"eval-containers/${EVAL_MODEL:-default}","small_model":"eval-containers/${EVAL_MODEL:-default}","disabled_providers":["anthropic","openai"],"provider":{"eval-containers":{"npm":"@ai-sdk/openai-compatible","name":"Eval Containers LiteLLM Proxy","options":{"baseURL":"${OPENAI_BASE_URL:-http://model:4000/v1}","apiKey":"${OPENAI_API_KEY:-sk-proxy}"},"models":{"${EVAL_MODEL:-default}":{"name":"Eval Containers Proxy Model"${model_limits}}}}},"permission":{"edit":"allow","bash":"allow","webfetch":"allow","external_directory":"allow"},"autoshare":false${agent_config}${instructions}${plugins}}
 CONF
 
 if [ -n "$base_system_prompt" ]; then
