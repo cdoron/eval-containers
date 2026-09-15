@@ -58,7 +58,9 @@ if ! $NO_BUILD; then
       # Nested path (agents/<name>, evals/<b>--<a>, …) — what an external
       # registry actually holds; the flat name ($is) is only meaningful for
       # the OpenShift internal registry's ImageStream naming (--builder oc).
-      ! $REBUILD && command docker image inspect "$REGISTRY/${nested}:latest" &>/dev/null && { log "skip $label (exists)"; return; }
+      # Query the registry itself rather than this machine's local image cache.
+      # A pre-baked external image may not have been pulled to this host.
+      ! $REBUILD && command docker buildx imagetools inspect "$REGISTRY/${nested}:latest" &>/dev/null && { log "skip $label (exists in registry)"; return; }
       eval-containers --registry "$REGISTRY" build "$@" --platform "$PLATFORM"
       # push doesn't take --model (the image is already built and tagged);
       # strip it from the same arg list the build call above just used.
