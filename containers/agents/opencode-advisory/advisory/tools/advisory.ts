@@ -9,6 +9,7 @@ import { serializeSessionContext } from "/opt/agent/advisory/context/session-con
 const DESCRIPTIONS_FILE = "/opt/agent/advisory/tool-descriptions.json"
 const EXECUTOR_PROMPT_FILE = "/home/agent/.config/opencode/executor-system-prompt.txt"
 const CONTEXT_MODES = new Set(["agent-provided", "full-session"])
+const FULL_SESSION_REQUEST = "Review the executor's current progress and provide concise, actionable guidance."
 
 function loadCatalog(): Record<string, unknown> {
   const raw = (process.env.EVAL_ADVISORY_CONFIG || "").trim()
@@ -133,8 +134,6 @@ export default mode === "full-session"
       description: resolvedDescription.text,
       args: {},
       async execute(_args, toolContext) {
-        const task = (process.env.TASK || "").trim()
-        if (!task) throw new Error("TASK is required for full-session advisor context")
         const session = await exportSession(toolContext.sessionID, toolContext.directory)
         const executorSystemPrompt = fs.existsSync(EXECUTOR_PROMPT_FILE)
           ? fs.readFileSync(EXECUTOR_PROMPT_FILE, "utf8")
@@ -142,11 +141,9 @@ export default mode === "full-session"
         const context = serializeSessionContext({
           session,
           currentMessageID: toolContext.messageID,
-          task,
           executorSystemPrompt,
-          advisorToolDescription: resolvedDescription.text,
         }, fullContextMaxBytes())
-        return requestAdvice(task, context)
+        return requestAdvice(FULL_SESSION_REQUEST, context)
       },
     })
   : tool({
