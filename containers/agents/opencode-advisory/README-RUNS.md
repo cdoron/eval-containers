@@ -205,10 +205,12 @@ Supported prompt fields are:
   `full_context_max_bytes`.
 
 `context_mode` defaults to `agent-provided`. In `full-session`, the advisor
-receives the original task and the exported OpenCode conversation, including
-exposed reasoning and tool calls/results. The active advisory call is removed;
-earlier advice remains without its duplicated old inputs. A nonzero
-`full_context_max_bytes` fails clearly when exceeded and never truncates.
+receives a compact model-visible OpenCode conversation, including exposed
+reasoning and tool calls/results but excluding executor tool definitions and
+internal session bookkeeping. Completed OpenCode compaction boundaries are
+honored. The active advisory call is removed; earlier advice remains without
+its duplicated old inputs. A nonzero `full_context_max_bytes` fails clearly
+when exceeded and never truncates.
 
 Each JSON file describes exactly one experiment. Use a separate file for each
 configuration; there is no run array or run index. Secrets remain in the shell,

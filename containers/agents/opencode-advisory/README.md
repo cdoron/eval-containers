@@ -91,17 +91,20 @@ writes a `request` and `context` argument for each advisory call. Set
 `--advisor-context-mode full-session` to make the tool take no arguments and
 instead send:
 
-- the original benchmark task as the advisor request;
-- the configured executor system-prompt addition and resolved advisory tool
-  description;
-- the active OpenCode session in chronological order, including exposed
-  reasoning, tool calls, results, and errors.
+- a fixed, concise review request;
+- the configured executor system-prompt addition;
+- the model-visible OpenCode conversation in chronological order, including
+  exposed reasoning and tool calls, results, and errors, but not executor tool
+  definitions.
 
-The active advisory call is removed to prevent recursion. Earlier advisory
-responses stay in place, but their old request/context inputs are removed so
-the complete session is not recursively duplicated. OpenCode does not expose
-its built-in base system prompt to custom tools, so only the configured
-executor addition can be included.
+The serializer applies OpenCode's completed-compaction boundary, uses its
+placeholder for cleared old tool results, and removes session bookkeeping such
+as IDs, timestamps, snapshots, token accounting, UI diffs, and duplicated tool
+metadata. The active advisory call is removed to prevent recursion. Earlier
+advisory responses stay in place, but their old request/context inputs are
+removed so the complete session is not recursively duplicated. OpenCode does
+not expose its built-in base system prompt to custom tools, so only the
+configured executor addition can be included.
 
 `--advisor-full-context-max-bytes <n>` sets a serialized byte limit. A value of
 `0` means unlimited. Exceeding a nonzero limit fails the tool call explicitly;
