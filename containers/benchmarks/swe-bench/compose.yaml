@@ -11,7 +11,7 @@ services:
         condition: service_healthy
       gateway:
         condition: service_healthy
-    image: ${EVAL_REGISTRY:-ghcr.io/exgentic}/evals/swe-bench-${EVAL_TASK_ID:?}--${EVAL_AGENT:-claude-code}:latest
+    image: ${EVAL_REGISTRY:-ghcr.io/exgentic}/evals/swe-bench-${EVAL_TASK_ID:?}--${EVAL_AGENT:-claude-code}:${EVAL_AGENT_TAG:-latest}
     environment:
       BENCHMARK: swe-bench
       EVAL_TIMEOUT: ${EVAL_TIMEOUT:-1800}
