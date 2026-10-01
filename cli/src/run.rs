@@ -154,6 +154,58 @@ pub struct RunArgs {
     #[arg(long)]
     advisor_full_context_max_bytes: Option<u64>,
 
+    /// Advisor request timeout in seconds, from 1 to 86400.
+    #[arg(long)]
+    advisor_timeout_seconds: Option<u32>,
+
+    /// Advisor invocation policy: self-initiated (default), random, openjev, or fixed.
+    #[arg(long)]
+    advisor_invocation_policy: Option<String>,
+
+    /// Per-eligible-turn advisor probability for the random policy, from 0 to 1.
+    #[arg(long)]
+    advisor_random_probability: Option<f64>,
+
+    /// Optional maximum platform-initiated advisor calls per task; omitted or 'unlimited' means no cap.
+    #[arg(long)]
+    advisor_max_calls: Option<String>,
+
+    /// Deterministic seed for random advisor decisions.
+    #[arg(long)]
+    advisor_random_seed: Option<String>,
+
+    /// Internal OpenJev helper base URL.
+    #[arg(long)]
+    openjev_base_url: Option<String>,
+
+    /// OpenJev classifier timeout in seconds, from 1 to 86400.
+    #[arg(long)]
+    advisor_openjev_timeout_seconds: Option<u32>,
+
+    /// Ask OpenJev every N eligible executor turns; defaults to 1.
+    #[arg(long)]
+    advisor_openjev_interval: Option<u32>,
+
+    /// OpenJev decision-policy configuration as inline JSON.
+    #[arg(long)]
+    advisor_openjev_policy_config: Option<String>,
+
+    /// Read the OpenJev decision-policy configuration from a host JSON file.
+    #[arg(long)]
+    advisor_openjev_policy_config_file: Option<PathBuf>,
+
+    /// Make one platform advisor call at this eligible executor turn.
+    #[arg(long)]
+    advisor_fixed_turn: Option<u32>,
+
+    /// Make a platform advisor call every N eligible executor turns.
+    #[arg(long)]
+    advisor_fixed_interval: Option<u32>,
+
+    /// Maximum eligible executor turns; 0 means unlimited.
+    #[arg(long)]
+    executor_max_turns: Option<u32>,
+
     /// Experiment label attached to advisor requests.
     #[arg(long)]
     experiment_id: Option<String>,
@@ -298,7 +350,39 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
     if let Some(document) = advisory_config.as_ref() {
         validate_advisory_config(document)?;
     }
+    let openjev_policy_config = resolve_text_source(
+        "OpenJev policy configuration",
+        args.advisor_openjev_policy_config.as_ref(),
+        args.advisor_openjev_policy_config_file.as_ref(),
+    )?;
+    if let Some(document) = openjev_policy_config.as_ref() {
+        validate_openjev_policy_config(document)?;
+    }
     validate_advisor_context_mode(args.advisor_context_mode.as_deref())?;
+    validate_advisor_timeout(args.advisor_timeout_seconds)?;
+    validate_advisor_timeout(args.advisor_openjev_timeout_seconds)?;
+    if matches!(
+        args.advisor_invocation_policy.as_deref(),
+        Some("random" | "openjev" | "fixed")
+    ) && (executor_system_prompt.is_some() || args.executor_system_prompt_variant.is_some())
+    {
+        return Err(
+            "platform advisor invocation does not accept an executor system-prompt addition".into(),
+        );
+    }
+    validate_advisor_invocation(
+        args.advisor_invocation_policy.as_deref(),
+        args.advisor_random_probability,
+        args.advisor_max_calls.as_deref(),
+        args.advisor_random_seed.as_deref(),
+        args.advisor_context_mode.as_deref(),
+        args.openjev_base_url.as_deref(),
+        openjev_policy_config.as_deref(),
+        args.advisor_openjev_timeout_seconds,
+        args.advisor_openjev_interval,
+        args.advisor_fixed_turn,
+        args.advisor_fixed_interval,
+    )?;
     let advisor_options_supplied = args.advisor_tool_description_variant.is_some()
         || advisor_tool_description.is_some()
         || advisor_system_prompt.is_some()
@@ -311,6 +395,18 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
         || args.advisor_log_payloads.is_some()
         || args.advisor_context_mode.is_some()
         || args.advisor_full_context_max_bytes.is_some()
+        || args.advisor_timeout_seconds.is_some()
+        || args.advisor_invocation_policy.is_some()
+        || args.advisor_random_probability.is_some()
+        || args.advisor_max_calls.is_some()
+        || args.advisor_random_seed.is_some()
+        || args.openjev_base_url.is_some()
+        || args.advisor_openjev_timeout_seconds.is_some()
+        || args.advisor_openjev_interval.is_some()
+        || openjev_policy_config.is_some()
+        || args.advisor_fixed_turn.is_some()
+        || args.advisor_fixed_interval.is_some()
+        || args.executor_max_turns.is_some()
         || args.experiment_id.is_some();
     validate_advisor_scope(&agent, &args.mode, advisor_options_supplied)?;
 
@@ -371,6 +467,46 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
     );
     if let Some(value) = args.advisor_full_context_max_bytes {
         envs.push(("EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES", value.to_string()));
+    }
+    if let Some(value) = args.advisor_timeout_seconds {
+        envs.push(("EVAL_ADVISOR_TIMEOUT_SECONDS", value.to_string()));
+    }
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_INVOCATION_POLICY",
+        &args.advisor_invocation_policy,
+    );
+    if let Some(value) = args.advisor_random_probability {
+        envs.push(("EVAL_ADVISOR_RANDOM_PROBABILITY", value.to_string()));
+    }
+    if let Some(value) = args.advisor_max_calls.as_ref() {
+        envs.push(("EVAL_ADVISOR_MAX_CALLS", value.clone()));
+    }
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_RANDOM_SEED",
+        &args.advisor_random_seed,
+    );
+    push_optional(&mut envs, "OPENJEV_BASE_URL", &args.openjev_base_url);
+    if let Some(value) = args.advisor_openjev_timeout_seconds {
+        envs.push(("EVAL_ADVISOR_OPENJEV_TIMEOUT_SECONDS", value.to_string()));
+    }
+    if let Some(value) = args.advisor_openjev_interval {
+        envs.push(("EVAL_ADVISOR_OPENJEV_INTERVAL", value.to_string()));
+    }
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_OPENJEV_POLICY_CONFIG",
+        &openjev_policy_config,
+    );
+    if let Some(value) = args.advisor_fixed_turn {
+        envs.push(("EVAL_ADVISOR_FIXED_TURN", value.to_string()));
+    }
+    if let Some(value) = args.advisor_fixed_interval {
+        envs.push(("EVAL_ADVISOR_FIXED_INTERVAL", value.to_string()));
+    }
+    if let Some(value) = args.executor_max_turns {
+        envs.push(("EVAL_EXECUTOR_MAX_TURNS", value.to_string()));
     }
     push_optional(&mut envs, "ADVISORY_EXPERIMENT_ID", &args.experiment_id);
     push_optional(&mut envs, "EVAL_GATEWAY_IMAGE", &args.gateway_image);
@@ -517,6 +653,133 @@ fn validate_advisor_scope(
     Ok(())
 }
 
+fn validate_advisor_timeout(value: Option<u32>) -> Result<(), String> {
+    if value.is_some_and(|value| value == 0 || value > 86400) {
+        return Err("advisor timeout seconds must be between 1 and 86400".into());
+    }
+    Ok(())
+}
+
+fn validate_advisor_invocation(
+    policy: Option<&str>,
+    probability: Option<f64>,
+    max_calls: Option<&str>,
+    seed: Option<&str>,
+    context_mode: Option<&str>,
+    openjev_base_url: Option<&str>,
+    openjev_policy_config: Option<&str>,
+    openjev_timeout_seconds: Option<u32>,
+    openjev_interval: Option<u32>,
+    fixed_turn: Option<u32>,
+    fixed_interval: Option<u32>,
+) -> Result<(), String> {
+    let policy = policy.unwrap_or("self-initiated");
+    if !matches!(policy, "self-initiated" | "random" | "openjev" | "fixed") {
+        return Err(
+            "advisor invocation policy must be 'self-initiated', 'random', 'openjev', or 'fixed'"
+                .into(),
+        );
+    }
+    if max_calls.is_some_and(|value| value != "unlimited" && !is_positive_integer(value)) {
+        return Err("advisor max calls must be a positive integer or 'unlimited'".into());
+    }
+    if policy == "self-initiated" {
+        if probability.is_some()
+            || max_calls.is_some()
+            || seed.is_some()
+            || openjev_base_url.is_some()
+            || openjev_policy_config.is_some()
+            || openjev_timeout_seconds.is_some()
+            || openjev_interval.is_some()
+            || fixed_turn.is_some()
+            || fixed_interval.is_some()
+        {
+            return Err(
+                "platform advisor options require --advisor-invocation-policy random, openjev, or fixed"
+                    .into(),
+            );
+        }
+        return Ok(());
+    }
+    if context_mode != Some("full-session") {
+        return Err(
+            "platform advisor invocation requires --advisor-context-mode full-session".into(),
+        );
+    }
+    if policy == "random" {
+        if openjev_base_url.is_some()
+            || openjev_policy_config.is_some()
+            || openjev_timeout_seconds.is_some()
+            || openjev_interval.is_some()
+        {
+            return Err("OpenJev options require --advisor-invocation-policy openjev".into());
+        }
+        if fixed_turn.is_some() || fixed_interval.is_some() {
+            return Err("fixed advisor options require --advisor-invocation-policy fixed".into());
+        }
+        let probability = probability.ok_or_else(|| {
+            "random advisor invocation requires --advisor-random-probability".to_string()
+        })?;
+        if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+            return Err("advisor random probability must be between 0 and 1".into());
+        }
+        if seed.is_none_or(|value| value.trim().is_empty()) {
+            return Err("random advisor invocation requires --advisor-random-seed".into());
+        }
+        return Ok(());
+    }
+
+    if policy == "openjev" {
+        if probability.is_some() || seed.is_some() {
+            return Err("random advisor options require --advisor-invocation-policy random".into());
+        }
+        if fixed_turn.is_some() || fixed_interval.is_some() {
+            return Err("fixed advisor options require --advisor-invocation-policy fixed".into());
+        }
+        if openjev_interval == Some(0) {
+            return Err("advisor OpenJev interval must be greater than 0".into());
+        }
+        return Ok(());
+    }
+
+    if probability.is_some() || seed.is_some() {
+        return Err("random advisor options require --advisor-invocation-policy random".into());
+    }
+    if openjev_base_url.is_some()
+        || openjev_policy_config.is_some()
+        || openjev_timeout_seconds.is_some()
+        || openjev_interval.is_some()
+    {
+        return Err("OpenJev options require --advisor-invocation-policy openjev".into());
+    }
+    if fixed_turn.is_some() == fixed_interval.is_some() {
+        return Err(
+            "fixed advisor invocation requires exactly one of --advisor-fixed-turn or --advisor-fixed-interval"
+                .into(),
+        );
+    }
+    if fixed_turn == Some(0) || fixed_interval == Some(0) {
+        return Err("fixed advisor turn and interval must be greater than 0".into());
+    }
+    Ok(())
+}
+
+fn is_positive_integer(value: &str) -> bool {
+    !value.is_empty() && !value.starts_with('0') && value.chars().all(|c| c.is_ascii_digit())
+}
+
+fn validate_openjev_policy_config(document: &str) -> Result<(), String> {
+    let value: Value = serde_json::from_str(document)
+        .map_err(|e| format!("OpenJev policy configuration is not valid JSON: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "OpenJev policy configuration must be a JSON object".to_string())?;
+    if object.get("schema_version").and_then(Value::as_u64) != Some(1) {
+        return Err("OpenJev policy configuration schema_version must be 1".into());
+    }
+    Ok(())
+}
+
 fn validate_path_component(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value == "."
@@ -582,6 +845,17 @@ fn prepare_output_dir(
         "EVAL_ADVISOR_SYSTEM_PROMPT_VARIANT",
         "EVAL_ADVISOR_CONTEXT_MODE",
         "EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES",
+        "EVAL_ADVISOR_TIMEOUT_SECONDS",
+        "EVAL_ADVISOR_INVOCATION_POLICY",
+        "EVAL_ADVISOR_RANDOM_PROBABILITY",
+        "EVAL_ADVISOR_MAX_CALLS",
+        "EVAL_ADVISOR_RANDOM_SEED",
+        "EVAL_ADVISOR_OPENJEV_TIMEOUT_SECONDS",
+        "EVAL_ADVISOR_OPENJEV_INTERVAL",
+        "EVAL_ADVISOR_OPENJEV_POLICY_CONFIG",
+        "EVAL_ADVISOR_FIXED_TURN",
+        "EVAL_ADVISOR_FIXED_INTERVAL",
+        "EVAL_EXECUTOR_MAX_TURNS",
         "ADVISOR_MODEL",
         "ADVISORY_EXPERIMENT_ID",
         "ADVISOR_LOG_PAYLOADS",
@@ -790,6 +1064,12 @@ fn run_container(
     local: bool,
     dry_run: bool,
 ) -> Result<(), String> {
+    let runner_tag = envs
+        .iter()
+        .find(|(key, _)| *key == "EVAL_AGENT_TAG")
+        .or_else(|| envs.iter().find(|(key, _)| *key == "EVAL_BENCHMARK_TAG"))
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("latest");
     // Per-task benchmarks bake one eval image per task: the bundle layers onto the
     // task-aware lean base (evals/<b>-<task>--<a>). Shared-env benchmarks use the
     // task-less name. Per-task resolution lives in the eval-base build context,
@@ -809,9 +1089,9 @@ fn run_container(
     // name (the helper lowercases the task id for Docker). (benchmarks/RULES.md 24f.)
     let image = match (per_task, task_id.as_deref()) {
         (true, Some(t)) => eval_containers::naming::eval_task_standalone_image(
-            registry, benchmark, t, agent, "latest",
+            registry, benchmark, t, agent, runner_tag,
         ),
-        _ => eval_containers::naming::eval_standalone_image(registry, benchmark, agent, "latest"),
+        _ => eval_containers::naming::eval_standalone_image(registry, benchmark, agent, runner_tag),
     };
     if local {
         // Build the bundle by layering the in-process gateway/otelcol/process-
@@ -824,9 +1104,9 @@ fn run_container(
         // single source of truth; we override only the eval-base context here.
         let combination = match (per_task, task_id.as_deref()) {
             (true, Some(t)) => {
-                eval_containers::naming::eval_task_image(registry, benchmark, t, agent, "latest")
+                eval_containers::naming::eval_task_image(registry, benchmark, t, agent, runner_tag)
             }
-            _ => eval_containers::naming::eval_image(registry, benchmark, agent, "latest"),
+            _ => eval_containers::naming::eval_image(registry, benchmark, agent, runner_tag),
         };
         let spec = crate::build::bake_print(
             "eval-standalone",
@@ -1079,7 +1359,8 @@ mod tests {
     use super::{
         CHART_NAME, CHART_VERSION, Mode, advisor_compose_overlay, append_benchmark_result_to,
         output_dir, reject_source_conflict, resolve_text_source, validate_advisor_context_mode,
-        validate_advisor_scope, validate_advisory_config, validate_path_component,
+        validate_advisor_invocation, validate_advisor_scope, validate_advisor_timeout,
+        validate_advisory_config, validate_openjev_policy_config, validate_path_component,
     };
 
     fn fleet_agents() -> Vec<String> {
@@ -1147,6 +1428,176 @@ mod tests {
     }
 
     #[test]
+    fn advisor_timeout_accepts_only_bounded_positive_seconds() {
+        assert!(validate_advisor_timeout(None).is_ok());
+        assert!(validate_advisor_timeout(Some(1)).is_ok());
+        assert!(validate_advisor_timeout(Some(900)).is_ok());
+        assert!(validate_advisor_timeout(Some(86400)).is_ok());
+        assert!(validate_advisor_timeout(Some(0)).is_err());
+        assert!(validate_advisor_timeout(Some(86401)).is_err());
+    }
+
+    #[test]
+    fn random_advisor_invocation_requires_complete_bounded_configuration() {
+        assert!(
+            validate_advisor_invocation(
+                Some("random"),
+                Some(0.25),
+                Some("3"),
+                Some("rep-1"),
+                Some("full-session"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_advisor_invocation(
+                Some("random"),
+                Some(1.1),
+                Some("3"),
+                Some("rep-1"),
+                Some("full-session"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_advisor_invocation(
+                Some("random"),
+                Some(0.25),
+                Some("0"),
+                Some("rep-1"),
+                Some("full-session"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_advisor_invocation(
+                Some("random"),
+                Some(0.25),
+                Some("3"),
+                Some("rep-1"),
+                Some("agent-provided"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_advisor_invocation(
+                None,
+                Some(0.25),
+                Some("3"),
+                Some("rep-1"),
+                Some("full-session"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn openjev_advisor_invocation_accepts_finite_or_unlimited_calls() {
+        for max_calls in ["4", "unlimited"] {
+            assert!(
+                validate_advisor_invocation(
+                    Some("openjev"),
+                    None,
+                    Some(max_calls),
+                    None,
+                    Some("full-session"),
+                    Some("http://openjev-svc:3000"),
+                    Some(r#"{"schema_version":1}"#),
+                    Some(30),
+                    Some(1),
+                    None,
+                    None,
+                )
+                .is_ok()
+            );
+        }
+        assert!(
+            validate_advisor_invocation(
+                Some("openjev"),
+                Some(0.1),
+                Some("unlimited"),
+                Some("seed"),
+                Some("full-session"),
+                Some("http://openjev-svc:3000"),
+                None,
+                Some(30),
+                Some(1),
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_advisor_invocation(
+                Some("openjev"),
+                None,
+                Some("0"),
+                None,
+                Some("full-session"),
+                Some("http://openjev-svc:3000"),
+                None,
+                Some(30),
+                Some(1),
+                None,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn platform_policies_allow_an_omitted_call_cap() {
+        for policy in ["random", "openjev"] {
+            assert!(
+                validate_advisor_invocation(
+                    Some(policy),
+                    (policy == "random").then_some(0.25),
+                    None,
+                    (policy == "random").then_some("rep-1"),
+                    Some("full-session"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn advisor_options_are_rejected_for_every_other_agent() {
         for agent in fleet_agents()
             .iter()
@@ -1178,6 +1629,49 @@ mod tests {
         assert!(validate_advisor_scope("opencode-advisory", &Mode::Compose, true).is_ok());
         assert!(validate_advisor_scope("opencode-advisory", &Mode::Container, true).is_err());
         assert!(validate_advisor_scope("opencode-advisory", &Mode::Job, true).is_err());
+    }
+
+    #[test]
+    fn fixed_advisor_invocation_requires_exactly_one_schedule() {
+        assert!(
+            validate_advisor_invocation(
+                Some("fixed"),
+                None,
+                Some("unlimited"),
+                None,
+                Some("full-session"),
+                None,
+                None,
+                None,
+                None,
+                Some(7),
+                None,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_advisor_invocation(
+                Some("fixed"),
+                None,
+                None,
+                None,
+                Some("full-session"),
+                None,
+                None,
+                None,
+                None,
+                Some(7),
+                Some(10),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn openjev_policy_configuration_requires_schema_one_json() {
+        assert!(validate_openjev_policy_config(r#"{"schema_version":1}"#).is_ok());
+        assert!(validate_openjev_policy_config(r#"{"schema_version":2}"#).is_err());
+        assert!(validate_openjev_policy_config("[]").is_err());
     }
 
     #[test]

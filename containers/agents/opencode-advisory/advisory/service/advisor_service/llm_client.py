@@ -1,8 +1,20 @@
 """Thin async wrappers around OpenAI-compatible endpoints."""
 
+import os
+
 import httpx
 
-_TIMEOUT = httpx.Timeout(300.0)
+
+def _timeout_seconds() -> float:
+    raw = os.environ.get("EVAL_ADVISOR_TIMEOUT_SECONDS", "300")
+    if not raw.isdigit() or not 0 < int(raw) <= 86400:
+        raise ValueError(
+            "EVAL_ADVISOR_TIMEOUT_SECONDS must be an integer from 1 to 86400"
+        )
+    return float(raw)
+
+
+_TIMEOUT = httpx.Timeout(_timeout_seconds())
 
 
 def _chat_completions_url(base_url: str) -> str:

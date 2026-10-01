@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "request": {
+    "model": "openjev",
+    "question_name": "advisor_decision",
+    "question": {
+      "type": "choice",
+      "instructions": "Decide whether consulting a separate, substantially larger and more capable language model is more likely than not to materially improve the result at this point in the task. Advisor calls are more expensive than continuing with the executor. When the state reports a finite remaining budget, those calls are limited and should be conserved.",
+      "criteria": {
+        "call_advisor": "The expected improvement from an independent second opinion justifies the higher cost and, when the budget is finite, spending one of the limited remaining advisor calls.",
+        "continue_executor": "The executor can continue effectively without paying the higher cost or spending a limited advisor call at this point."
+      }
+    }
+  },
+  "state": {
+    "frame": "You are deciding whether an autonomous software-engineering executor should consult an expert advisor before taking its next action.",
+    "include_turn": true,
+    "include_advisor_calls_used": true,
+    "include_advisor_calls_remaining": true,
+    "context": {
+      "max_bytes": 48000,
+      "max_string_characters": 12000,
+      "preserve_initial_task": true,
+      "preserve_recent_messages": true,
+      "include_tool_results": true
+    }
+  },
+  "decision": {
+    "call_choice": "call_advisor",
+    "continue_choice": "continue_executor"
+  }
+}

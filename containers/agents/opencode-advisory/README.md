@@ -13,8 +13,8 @@ calls an independently configured advisor model.
 ## Runtime flow
 
 ```text
-executor OpenCode -> advisory tool -> advisor sidecar -> advisor model endpoint
-              \-> executor gateway -> executor model
+executor OpenCode -> intervention router -> executor gateway -> executor model
+                         \-> advisory tool -> advisor sidecar -> advisor model
 ```
 
 The sidecar is built into the same agent image and started with a different
@@ -27,6 +27,51 @@ The native tool lives in
 [`advisory/tools/advisory.ts`](advisory/tools/advisory.ts). OpenCode executes
 it directly, so it works with both real-shell benchmarks such as SWE-bench and
 sandboxed execution bridges such as AppWorld.
+
+## Platform-initiated random calls
+
+The default `self-initiated` policy preserves the original behavior. With
+`--advisor-invocation-policy random`, an agent-local router decides before each
+eligible executor turn whether the platform should call the advisor instead.
+Selected turns do not call the executor model. The following turn is always an
+executor turn, so random selection cannot create consecutive advisor-only
+turns.
+
+In random mode:
+
+- the router removes the `advisory` definition from the tools sent to the
+  executor, so the executor cannot initiate advisor calls;
+- executor system-prompt additions are rejected, preventing a stale prompt
+  from mentioning the advisor in this condition;
+- the synthetic advisory tool call and result are removed from the next
+  executor request;
+- the advice is sent to the executor as a platform `system` message beginning
+  with: `This is not your tool call, but an advisor call initiated by the
+  platform. The advisor's response is:`;
+- each decision and its call count are written as structured JSON to the agent
+  stderr log.
+
+Random mode requires `full-session` context, an explicit probability, and a
+deterministic seed. `EVAL_ADVISOR_MAX_CALLS` is optional; omitted or
+`unlimited` means no cap. A finite cap counts attempted platform calls,
+including failed advisor calls.
+
+OpenJev mode uses the same router and synthetic advisor-call protocol, but
+replaces the random draw with an authenticated `/v1/systemone` classification.
+The classifier receives a bounded copy of the model-visible executor messages;
+its frame, question, criteria, labels, and context bounds are configurable with
+`EVAL_ADVISOR_OPENJEV_POLICY_CONFIG`. Classifier errors fail open to a normal
+executor turn and do not consume an advisor call. The classifier runs every
+`EVAL_ADVISOR_OPENJEV_INTERVAL` eligible turns (default `1`). A selected call
+passes the exact compact state evaluated by OpenJev to the advisor and is still
+followed by one mandatory executor turn. The call cap is optional and defaults
+to unlimited. The default question tells OpenJev that advisor calls are more
+expensive and, for a finite budget, limited.
+
+Fixed mode uses the same platform-call protocol without a classifier or random
+draw. Configure exactly one of `EVAL_ADVISOR_FIXED_TURN` for one call at turn
+Y, or `EVAL_ADVISOR_FIXED_INTERVAL` for calls at turns X, 2X, 3X, and so on.
+The optional shared call cap applies to recurring schedules.
 
 ## Configurable text
 
@@ -121,6 +166,25 @@ Service settings remain separate from experimental text:
 | `ADVISORY_EXPERIMENT_ID` / `--experiment-id` | Experiment label attached to advisor spans |
 | `EVAL_ADVISOR_CONTEXT_MODE` / `--advisor-context-mode` | `agent-provided` or `full-session` |
 | `EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES` / `--advisor-full-context-max-bytes` | Full-session size limit; `0` is unlimited |
+| `EVAL_ADVISOR_TIMEOUT_SECONDS` / `--advisor-timeout-seconds` | Advisor service and tool request timeout; default `300` |
+| `EVAL_ADVISOR_INVOCATION_POLICY` / `--advisor-invocation-policy` | `self-initiated`, `random`, `openjev`, or `fixed` |
+| `EVAL_ADVISOR_RANDOM_PROBABILITY` / `--advisor-random-probability` | Random selection probability from `0` to `1` |
+| `EVAL_ADVISOR_MAX_CALLS` / `--advisor-max-calls` | Optional positive platform-call cap; omitted or `unlimited` means no cap |
+| `EVAL_ADVISOR_RANDOM_SEED` / `--advisor-random-seed` | Deterministic experiment seed |
+| `OPENJEV_BASE_URL` / `--openjev-base-url` | Authenticated OpenJev helper base URL |
+| `OPENJEV_API_KEY` | OpenJev helper bearer token; environment only |
+| `EVAL_ADVISOR_OPENJEV_TIMEOUT_SECONDS` / `--advisor-openjev-timeout-seconds` | OpenJev classification timeout; default `30` |
+| `EVAL_ADVISOR_OPENJEV_INTERVAL` / `--advisor-openjev-interval` | Classify every N eligible executor turns; default `1` |
+| `EVAL_ADVISOR_OPENJEV_POLICY_CONFIG` / `--advisor-openjev-policy-config` | Resolved OpenJev decision-policy JSON |
+| `--advisor-openjev-policy-config-file` | Host JSON file resolved into the policy configuration |
+| `EVAL_ADVISOR_FIXED_TURN` / `--advisor-fixed-turn` | Make one platform advisor call at eligible executor turn Y |
+| `EVAL_ADVISOR_FIXED_INTERVAL` / `--advisor-fixed-interval` | Make a platform advisor call every X eligible executor turns |
+| `EVAL_EXECUTOR_MAX_TURNS` / `--executor-max-turns` | Optional eligible executor-turn cap; `0` means unlimited |
+
+For platform-initiated calls, only a successful advisor result is inserted as
+the prefixed system message. A timeout or other tool error is removed together
+with the synthetic tool call before the executor request is forwarded. The
+failed attempt still consumes one call from `EVAL_ADVISOR_MAX_CALLS`.
 
 Do not commit credentials. See
 [`advisory/service/.env.example`](advisory/service/.env.example) for safe
@@ -188,6 +252,11 @@ docker compose \
 - `compose.yaml` — advisor sidecar and runner wiring
 - `advisory/tools/advisory.ts` — native advisory tool
 - `advisory/context/session-context.mjs` — full-session filtering and serialization
+- `advisory/intervention/random-router.mjs` — platform random/OpenJev router
+- `advisory/intervention/classifier-context.mjs` — bounded model-visible classifier context
+- `advisory/intervention/openjev-policy.mjs` — authenticated OpenJev decision policy
+- `advisory/intervention/openjev-policy.example.json` — configurable policy example
+- `advisory/intervention/protocol.mjs` — synthetic-call and platform-message contract
 - `advisory/tool-descriptions.json` — six built-in descriptions
 - `advisory/resolve-config.py` — named executor prompt resolver
 - `advisory/service/` — advisor HTTP service, tracing, and tests

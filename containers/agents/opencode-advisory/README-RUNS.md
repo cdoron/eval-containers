@@ -31,26 +31,30 @@ Keep all four in `.env`; experiment JSON deliberately contains no secrets.
 
 ## 2. Rebuild after these changes
 
+Use a new immutable tag for this code. Do not publish it as `latest` and do
+not reuse a tag from an earlier experiment.
+
 ```bash
 cargo build --release --manifest-path cli/Cargo.toml
 
-./target/release/eval-containers build agent opencode-advisory \
+export IMAGE_TAG=platform-random-v1
+
+TAG="$IMAGE_TAG" \
+  ./target/release/eval-containers build agent opencode-advisory \
   --platform "$EVAL_BUILD_PLATFORM"
 
-./target/release/eval-containers build bench swe-bench \
-  --task-id "$SWE_BENCH_TASK_ID" \
-  --platform "$EVAL_BUILD_PLATFORM"
-
-./target/release/eval-containers build eval swe-bench \
+TAG="$IMAGE_TAG" EVAL_BENCHMARK_TAG=latest EVAL_AGENT_TAG="$IMAGE_TAG" \
+  ./target/release/eval-containers build eval swe-bench \
   --task-id "$SWE_BENCH_TASK_ID" \
   --agent opencode-advisory \
   --model litellm \
-  --platform "$EVAL_BUILD_PLATFORM" \
-  --no-pull
+  --platform "$EVAL_BUILD_PLATFORM"
 ```
 
-Rebuild LiteLLM only if its image changed. Rebuild other benchmark/task
-combinations only when you intend to run them.
+The eval build reads the unchanged task benchmark from `:latest`, reads the
+new agent from `:$IMAGE_TAG`, and writes the combined eval to `:$IMAGE_TAG`.
+It does not move any existing tag. Rebuild LiteLLM or a benchmark image only
+if that component changed.
 
 ## 3. Text-source model
 
@@ -166,6 +170,73 @@ Built-in tool description plus default advisor system prompt:
   --local --timeout 1800
 ```
 
+Platform-initiated random calls, with no executor prompt mentioning the
+advisor and no advisory tool definition exposed to the executor:
+
+```bash
+./target/release/eval-containers run swe-bench \
+  --task-id "$SWE_BENCH_TASK_ID" \
+  --agent opencode-advisory \
+  --model "$EXECUTOR_MODEL" \
+  --gateway-image litellm \
+  --advisor-model "$ADVISOR_MODEL" \
+  --advisor-base-url "$ADVISOR_BASE_URL" \
+  --advisor-context-mode full-session \
+  --advisor-invocation-policy random \
+  --advisor-random-probability 0.25 \
+  --advisor-max-calls 3 \
+  --advisor-random-seed random-v1-repetition-1 \
+  --experiment-id random-v1-repetition-1 \
+  --agent-tag "$IMAGE_TAG" \
+  --local --timeout 1800
+```
+
+Do not add any `--executor-system-prompt*` option for this condition. The
+platform router supplies the advisor intervention independently of prompting.
+
+Platform-initiated OpenJev classification, preserving the same hidden tool
+protocol while allowing either a finite call limit or `unlimited`:
+
+```bash
+export OPENJEV_API_KEY="replace-with-helper-token"
+
+./target/release/eval-containers run swe-bench \
+  --task-id "$SWE_BENCH_TASK_ID" \
+  --agent opencode-advisory \
+  --model "$EXECUTOR_MODEL" \
+  --gateway-image litellm \
+  --advisor-model "$ADVISOR_MODEL" \
+  --advisor-base-url "$ADVISOR_BASE_URL" \
+  --advisor-context-mode full-session \
+  --advisor-invocation-policy openjev \
+  --openjev-base-url http://openjev-svc.advisor-erel.svc.cluster.local:3000 \
+  --advisor-openjev-policy-config-file \
+    containers/agents/opencode-advisory/advisory/intervention/openjev-policy.example.json \
+  --advisor-openjev-timeout-seconds 30 \
+  --advisor-openjev-interval 1 \
+  --advisor-max-calls unlimited \
+  --experiment-id openjev-neutral-v1 \
+  --agent-tag "$IMAGE_TAG" \
+  --local --timeout 1800
+```
+
+OpenJev classification failures are logged and fail open to the executor. They
+do not consume the advisor-call budget. A selected advisor attempt does consume
+the budget even if the downstream advisor later fails, matching random mode.
+
+Platform-initiated fixed scheduling, using either one turn or one interval:
+
+```bash
+# One call at eligible executor turn 12:
+--advisor-invocation-policy fixed --advisor-fixed-turn 12
+
+# Or calls at turns 10, 20, 30, ... with an optional finite cap:
+--advisor-invocation-policy fixed --advisor-fixed-interval 10 --advisor-max-calls 3
+```
+
+Both forms also require `--advisor-context-mode full-session`, the immutable
+`--agent-tag`, and the normal executor/advisor endpoint options shown above.
+
 ## 5. Experiment JSON
 
 The JSON names match the CLI concepts:
@@ -178,17 +249,20 @@ The JSON names match the CLI concepts:
   "agent": "opencode-advisory",
   "executor_model": "aws/claude-haiku-4-5",
   "gateway_image": "litellm",
+  "agent_tag": "platform-random-v1",
   "mode": "compose",
   "local": true,
-  "experiment_id": "named-configuration",
+  "experiment_id": "random-v1-repetition-1",
   "advisory_config_file": "experiments/advisory-config.example.json",
-  "executor_system_prompt_variant": "inspect-tools",
   "advisor": {
     "model": "aws/claude-opus-4-8",
     "system_prompt_variant": "strategic-default",
-    "tool_description_variant": "brief-reviewer",
     "context_mode": "full-session",
     "full_context_max_bytes": 0,
+    "invocation_policy": "random",
+    "random_probability": 0.25,
+    "max_calls": 3,
+    "random_seed": "random-v1-repetition-1",
     "log_payloads": true
   }
 }
@@ -196,13 +270,18 @@ The JSON names match the CLI concepts:
 
 Supported prompt fields are:
 
+- top-level `agent_tag` selects the immutable agent and combined eval images;
 - top level: `executor_system_prompt`, `executor_system_prompt_file`,
   `executor_system_prompt_variant`, `advisory_config`, and
   `advisory_config_file`;
 - under `advisor`: `system_prompt`, `system_prompt_file`,
   `system_prompt_variant`, `tool_description`, `tool_description_file`, and
   `tool_description_variant`, plus `context_mode` and
-  `full_context_max_bytes`.
+  `full_context_max_bytes`. Platform invocation additionally uses
+  `invocation_policy` and optional `max_calls`; random uses
+  `random_probability` and `random_seed`; OpenJev uses `openjev_base_url`,
+  `openjev_timeout_seconds`, `openjev_interval`, and its policy configuration;
+  fixed uses exactly one of `fixed_turn` or `fixed_interval`.
 
 `context_mode` defaults to `agent-provided`. In `full-session`, the advisor
 receives a compact model-visible OpenCode conversation, including exposed
