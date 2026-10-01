@@ -1,8 +1,13 @@
 "use strict"
 
 export const AUTOMATED_ADVISOR_CALL_PREFIX = "call_platform_advisor_"
-export const PLATFORM_ADVISOR_MESSAGE_PREFIX =
-  "This is not your tool call, but an advisor call initiated by the platform. The advisor's response is:"
+export const PLATFORM_ADVISOR_MESSAGE_PREFIX = [
+  "This is not your tool call, but an advisor call initiated by the platform. The advisor's response is:",
+  "",
+  "Give the advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim (the file says X, the paper states Y), adapt. A passing self-test is not evidence that the advice is wrong -- it is evidence that your test does not check what the advice is checking.",
+  "",
+  "If you have already retrieved data pointing one way and the advisor points another, do not silently switch. Surface the conflict in one more advisory call: \"I found X, you suggest Y; which constraint breaks the tie?\" The advisor saw your evidence but may have underweighted it; a reconciliation call is cheaper than committing to the wrong branch.",
+].join("\n")
 
 export function isAutomatedAdvisorCallID(callID) {
   return typeof callID === "string" && callID.startsWith(AUTOMATED_ADVISOR_CALL_PREFIX)
