@@ -134,6 +134,30 @@ The shared `EVAL_ADVISOR_MAX_CALLS` setting can cap a recurring schedule. A
 selected call is still followed by one forced executor turn, even when the
 configured interval would otherwise allow consecutive advisor calls.
 
+## Image tags
+
+Platform invocation changes the agent image, so run it from a new immutable
+tag rather than overwriting `latest` or reusing a self-initiated experiment
+tag. `--agent-tag TAG` (or experiment JSON `agent_tag`) selects that tag. The
+same tag is used for the combined runner image; when both agent and benchmark
+tags are supplied, the agent tag wins for the runner.
+
+The external-registry image names are:
+
+```text
+<registry>/agents/opencode-advisory:<tag>
+<registry>/evals/<benchmark>--opencode-advisory:<tag>
+<registry>/evals/<benchmark>-<task-id>--opencode-advisory:<tag>
+```
+
+The last form is used by per-task benchmarks such as SWE-bench, with the task
+ID lowercased. Both the executor and advisor-sidecar services use the tagged
+`opencode-advisory` agent image. Random, OpenJEV, and fixed conditions may all
+reuse one platform-capable tag because the policy is selected at runtime. An
+old self-initiated image does not gain these policies from configuration alone;
+the agent and relevant combined/per-task eval images must first be built under
+the new tag. Existing tags remain untouched.
+
 ## Configurable text
 
 Three independent values can be changed for experiments:

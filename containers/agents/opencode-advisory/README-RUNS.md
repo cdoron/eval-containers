@@ -56,6 +56,23 @@ new agent from `:$IMAGE_TAG`, and writes the combined eval to `:$IMAGE_TAG`.
 It does not move any existing tag. Rebuild LiteLLM or a benchmark image only
 if that component changed.
 
+For an external registry, those commands address images in these forms:
+
+```text
+<registry>/agents/opencode-advisory:<IMAGE_TAG>
+<registry>/evals/swe-bench-<lowercase-task-id>--opencode-advisory:<IMAGE_TAG>
+```
+
+Shared-environment benchmarks instead use
+`<registry>/evals/<benchmark>--opencode-advisory:<IMAGE_TAG>`. SWE-bench is
+per-task, so every task to be run needs its own combined eval image under the
+new tag. The one tagged agent image is shared by the executor and advisor
+sidecar, and the same platform-capable tag can run random, OpenJEV, or fixed
+conditions; those policies are runtime configuration, not separate image
+variants. Pass the tag with `--agent-tag "$IMAGE_TAG"` or set top-level JSON
+`"agent_tag": "<IMAGE_TAG>"`. Existing self-initiated tags remain usable and
+are not overwritten.
+
 ## 3. Text-source model
 
 Executor system prompt, advisor system prompt, and tool description each accept
