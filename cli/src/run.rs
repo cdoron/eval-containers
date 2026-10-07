@@ -370,19 +370,19 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
             "platform advisor invocation does not accept an executor system-prompt addition".into(),
         );
     }
-    validate_advisor_invocation(
-        args.advisor_invocation_policy.as_deref(),
-        args.advisor_random_probability,
-        args.advisor_max_calls.as_deref(),
-        args.advisor_random_seed.as_deref(),
-        args.advisor_context_mode.as_deref(),
-        args.openjev_base_url.as_deref(),
-        openjev_policy_config.as_deref(),
-        args.advisor_openjev_timeout_seconds,
-        args.advisor_openjev_interval,
-        args.advisor_fixed_turn,
-        args.advisor_fixed_interval,
-    )?;
+    validate_advisor_invocation(AdvisorInvocationOptions {
+        policy: args.advisor_invocation_policy.as_deref(),
+        probability: args.advisor_random_probability,
+        max_calls: args.advisor_max_calls.as_deref(),
+        seed: args.advisor_random_seed.as_deref(),
+        context_mode: args.advisor_context_mode.as_deref(),
+        openjev_base_url: args.openjev_base_url.as_deref(),
+        openjev_policy_config: openjev_policy_config.as_deref(),
+        openjev_timeout_seconds: args.advisor_openjev_timeout_seconds,
+        openjev_interval: args.advisor_openjev_interval,
+        fixed_turn: args.advisor_fixed_turn,
+        fixed_interval: args.advisor_fixed_interval,
+    })?;
     let advisor_options_supplied = args.advisor_tool_description_variant.is_some()
         || advisor_tool_description.is_some()
         || advisor_system_prompt.is_some()
@@ -660,19 +660,35 @@ fn validate_advisor_timeout(value: Option<u32>) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_advisor_invocation(
-    policy: Option<&str>,
+#[derive(Default)]
+struct AdvisorInvocationOptions<'a> {
+    policy: Option<&'a str>,
     probability: Option<f64>,
-    max_calls: Option<&str>,
-    seed: Option<&str>,
-    context_mode: Option<&str>,
-    openjev_base_url: Option<&str>,
-    openjev_policy_config: Option<&str>,
+    max_calls: Option<&'a str>,
+    seed: Option<&'a str>,
+    context_mode: Option<&'a str>,
+    openjev_base_url: Option<&'a str>,
+    openjev_policy_config: Option<&'a str>,
     openjev_timeout_seconds: Option<u32>,
     openjev_interval: Option<u32>,
     fixed_turn: Option<u32>,
     fixed_interval: Option<u32>,
-) -> Result<(), String> {
+}
+
+fn validate_advisor_invocation(options: AdvisorInvocationOptions<'_>) -> Result<(), String> {
+    let AdvisorInvocationOptions {
+        policy,
+        probability,
+        max_calls,
+        seed,
+        context_mode,
+        openjev_base_url,
+        openjev_policy_config,
+        openjev_timeout_seconds,
+        openjev_interval,
+        fixed_turn,
+        fixed_interval,
+    } = options;
     let policy = policy.unwrap_or("self-initiated");
     if !matches!(policy, "self-initiated" | "random" | "openjev" | "fixed") {
         return Err(
@@ -1357,10 +1373,11 @@ fn run_job(registry: &str, benchmark: &str, args: &RunArgs) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::{
-        CHART_NAME, CHART_VERSION, Mode, advisor_compose_overlay, append_benchmark_result_to,
-        output_dir, reject_source_conflict, resolve_text_source, validate_advisor_context_mode,
-        validate_advisor_invocation, validate_advisor_scope, validate_advisor_timeout,
-        validate_advisory_config, validate_openjev_policy_config, validate_path_component,
+        AdvisorInvocationOptions, CHART_NAME, CHART_VERSION, Mode, advisor_compose_overlay,
+        append_benchmark_result_to, output_dir, reject_source_conflict, resolve_text_source,
+        validate_advisor_context_mode, validate_advisor_invocation, validate_advisor_scope,
+        validate_advisor_timeout, validate_advisory_config, validate_openjev_policy_config,
+        validate_path_component,
     };
 
     fn fleet_agents() -> Vec<String> {
@@ -1440,83 +1457,57 @@ mod tests {
     #[test]
     fn random_advisor_invocation_requires_complete_bounded_configuration() {
         assert!(
-            validate_advisor_invocation(
-                Some("random"),
-                Some(0.25),
-                Some("3"),
-                Some("rep-1"),
-                Some("full-session"),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("random"),
+                probability: Some(0.25),
+                max_calls: Some("3"),
+                seed: Some("rep-1"),
+                context_mode: Some("full-session"),
+                ..Default::default()
+            })
             .is_ok()
         );
         assert!(
-            validate_advisor_invocation(
-                Some("random"),
-                Some(1.1),
-                Some("3"),
-                Some("rep-1"),
-                Some("full-session"),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("random"),
+                probability: Some(1.1),
+                max_calls: Some("3"),
+                seed: Some("rep-1"),
+                context_mode: Some("full-session"),
+                ..Default::default()
+            })
             .is_err()
         );
         assert!(
-            validate_advisor_invocation(
-                Some("random"),
-                Some(0.25),
-                Some("0"),
-                Some("rep-1"),
-                Some("full-session"),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("random"),
+                probability: Some(0.25),
+                max_calls: Some("0"),
+                seed: Some("rep-1"),
+                context_mode: Some("full-session"),
+                ..Default::default()
+            })
             .is_err()
         );
         assert!(
-            validate_advisor_invocation(
-                Some("random"),
-                Some(0.25),
-                Some("3"),
-                Some("rep-1"),
-                Some("agent-provided"),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("random"),
+                probability: Some(0.25),
+                max_calls: Some("3"),
+                seed: Some("rep-1"),
+                context_mode: Some("agent-provided"),
+                ..Default::default()
+            })
             .is_err()
         );
         assert!(
-            validate_advisor_invocation(
-                None,
-                Some(0.25),
-                Some("3"),
-                Some("rep-1"),
-                Some("full-session"),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                probability: Some(0.25),
+                max_calls: Some("3"),
+                seed: Some("rep-1"),
+                context_mode: Some("full-session"),
+                ..Default::default()
+            })
             .is_err()
         );
     }
@@ -1525,52 +1516,43 @@ mod tests {
     fn openjev_advisor_invocation_accepts_finite_or_unlimited_calls() {
         for max_calls in ["4", "unlimited"] {
             assert!(
-                validate_advisor_invocation(
-                    Some("openjev"),
-                    None,
-                    Some(max_calls),
-                    None,
-                    Some("full-session"),
-                    Some("http://openjev-svc:3000"),
-                    Some(r#"{"schema_version":1}"#),
-                    Some(30),
-                    Some(1),
-                    None,
-                    None,
-                )
+                validate_advisor_invocation(AdvisorInvocationOptions {
+                    policy: Some("openjev"),
+                    max_calls: Some(max_calls),
+                    context_mode: Some("full-session"),
+                    openjev_base_url: Some("http://openjev-svc:3000"),
+                    openjev_policy_config: Some(r#"{"schema_version":1}"#),
+                    openjev_timeout_seconds: Some(30),
+                    openjev_interval: Some(1),
+                    ..Default::default()
+                })
                 .is_ok()
             );
         }
         assert!(
-            validate_advisor_invocation(
-                Some("openjev"),
-                Some(0.1),
-                Some("unlimited"),
-                Some("seed"),
-                Some("full-session"),
-                Some("http://openjev-svc:3000"),
-                None,
-                Some(30),
-                Some(1),
-                None,
-                None,
-            )
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("openjev"),
+                probability: Some(0.1),
+                max_calls: Some("unlimited"),
+                seed: Some("seed"),
+                context_mode: Some("full-session"),
+                openjev_base_url: Some("http://openjev-svc:3000"),
+                openjev_timeout_seconds: Some(30),
+                openjev_interval: Some(1),
+                ..Default::default()
+            })
             .is_err()
         );
         assert!(
-            validate_advisor_invocation(
-                Some("openjev"),
-                None,
-                Some("0"),
-                None,
-                Some("full-session"),
-                Some("http://openjev-svc:3000"),
-                None,
-                Some(30),
-                Some(1),
-                None,
-                None,
-            )
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("openjev"),
+                max_calls: Some("0"),
+                context_mode: Some("full-session"),
+                openjev_base_url: Some("http://openjev-svc:3000"),
+                openjev_timeout_seconds: Some(30),
+                openjev_interval: Some(1),
+                ..Default::default()
+            })
             .is_err()
         );
     }
@@ -1579,19 +1561,13 @@ mod tests {
     fn platform_policies_allow_an_omitted_call_cap() {
         for policy in ["random", "openjev"] {
             assert!(
-                validate_advisor_invocation(
-                    Some(policy),
-                    (policy == "random").then_some(0.25),
-                    None,
-                    (policy == "random").then_some("rep-1"),
-                    Some("full-session"),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
+                validate_advisor_invocation(AdvisorInvocationOptions {
+                    policy: Some(policy),
+                    probability: (policy == "random").then_some(0.25),
+                    seed: (policy == "random").then_some("rep-1"),
+                    context_mode: Some("full-session"),
+                    ..Default::default()
+                })
                 .is_ok()
             );
         }
@@ -1634,35 +1610,23 @@ mod tests {
     #[test]
     fn fixed_advisor_invocation_requires_exactly_one_schedule() {
         assert!(
-            validate_advisor_invocation(
-                Some("fixed"),
-                None,
-                Some("unlimited"),
-                None,
-                Some("full-session"),
-                None,
-                None,
-                None,
-                None,
-                Some(7),
-                None,
-            )
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("fixed"),
+                max_calls: Some("unlimited"),
+                context_mode: Some("full-session"),
+                fixed_turn: Some(7),
+                ..Default::default()
+            })
             .is_ok()
         );
         assert!(
-            validate_advisor_invocation(
-                Some("fixed"),
-                None,
-                None,
-                None,
-                Some("full-session"),
-                None,
-                None,
-                None,
-                None,
-                Some(7),
-                Some(10),
-            )
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("fixed"),
+                context_mode: Some("full-session"),
+                fixed_turn: Some(7),
+                fixed_interval: Some(10),
+                ..Default::default()
+            })
             .is_err()
         );
     }
