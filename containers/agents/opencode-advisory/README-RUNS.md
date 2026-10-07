@@ -170,8 +170,41 @@ Built-in tool description plus default advisor system prompt:
   --local --timeout 1800
 ```
 
-Platform-initiated random calls, with no executor prompt mentioning the
-advisor and no advisory tool definition exposed to the executor:
+### Platform-initiated call lifecycle
+
+`self-initiated` is the default: the executor sees the native `advisory` tool
+and decides when to call it. `random`, `openjev`, and `fixed` move that decision
+to the platform. All three platform policies require `full-session` context and
+must run without an executor system-prompt addition.
+
+On a selected turn, the local router bypasses the executor model and returns a
+synthetic assistant `advisory` tool call to OpenCode. OpenCode executes the
+normal advisory tool, so the advisor sidecar, tracing, and persisted tool
+exchange remain unchanged. On later executor requests, the router removes the
+synthetic call/result pair and converts successful advice into a platform
+`system` message. Failed advice is omitted from executor context. Every selected
+attempt consumes the call budget, and the next eligible request is forced to be
+a normal executor turn.
+
+The common platform settings are:
+
+| Flag | Meaning |
+|---|---|
+| `--advisor-context-mode full-session` | Required for every platform policy. |
+| `--advisor-max-calls N` | Limit each task to N attempted platform advisor calls. |
+| `--advisor-max-calls unlimited` | Explicitly remove the per-task advisor-call cap; omission has the same meaning. |
+| `--executor-max-turns N` | Optional platform cap on eligible executor turns; `0` is unlimited. |
+| `--agent-tag TAG` | Select the immutable agent/eval image containing the policy implementation. Use a non-`latest` experiment tag. |
+
+Do not add any `--executor-system-prompt*` option to a platform-initiated
+condition. The platform router supplies the intervention independently of
+executor prompting and hides the advisory tool from the executor model.
+
+### Random selection
+
+`--advisor-random-probability` is the probability of selection at each eligible
+turn. The draw is derived from the seed and turn number, so a run is
+reproducible; use a different seed for each intended repetition.
 
 ```bash
 ./target/release/eval-containers run swe-bench \
@@ -191,11 +224,13 @@ advisor and no advisory tool definition exposed to the executor:
   --local --timeout 1800
 ```
 
-Do not add any `--executor-system-prompt*` option for this condition. The
-platform router supplies the advisor intervention independently of prompting.
+### OpenJEV selection
 
-Platform-initiated OpenJev classification, preserving the same hidden tool
-protocol while allowing either a finite call limit or `unlimited`:
+OpenJEV receives a bounded, model-visible state and answers whether the platform
+should call the advisor. `--advisor-openjev-interval N` runs the classifier on
+every Nth eligible turn (`1` means every turn). The classifier timeout is
+independent of the downstream advisor timeout. Classification failures fail
+open to a normal executor turn and do not consume the advisor-call budget.
 
 ```bash
 export OPENJEV_API_KEY="replace-with-helper-token"
@@ -220,22 +255,75 @@ export OPENJEV_API_KEY="replace-with-helper-token"
   --local --timeout 1800
 ```
 
-OpenJev classification failures are logged and fail open to the executor. They
-do not consume the advisor-call budget. A selected advisor attempt does consume
-the budget even if the downstream advisor later fails, matching random mode.
+The policy file is merged over the built-in defaults. The most commonly changed
+fields are:
 
-Platform-initiated fixed scheduling, using either one turn or one interval:
+| JSON field | Meaning |
+|---|---|
+| `request.model` | Model name sent to `/v1/systemone`. |
+| `request.question.instructions` | Instruction used to decide whether advice is worthwhile. |
+| `request.question.criteria` | Choice names and descriptions presented to OpenJEV. |
+| `state.frame` | Short description of the classification task. |
+| `state.include_turn` | Include the current eligible turn number. |
+| `state.include_advisor_calls_used` | Include the number of selected advisor attempts. |
+| `state.include_advisor_calls_remaining` | Include the finite remaining budget, or mark it unlimited. |
+| `state.context.max_bytes` | Total serialized classifier-state limit. |
+| `state.context.max_string_characters` | Per-message character limit before total-state compaction. |
+| `state.context.preserve_initial_task` | Preserve the first message when compacting. |
+| `state.context.preserve_recent_messages` | Retain as many recent messages as fit. |
+| `state.context.include_tool_results` | Include tool-result messages. Assistant tool-call declarations remain represented independently. |
+| `decision.call_choice` / `continue_choice` | Map OpenJEV answer labels to platform actions. |
+
+When OpenJEV selects the advisor, the compact state it classified is also used
+as the advisor context. A selected advisor attempt consumes the budget even if
+the downstream advisor later times out or fails.
+
+### Fixed scheduling
+
+Fixed scheduling uses the same hidden platform-call protocol without a random
+draw or classifier. Provide exactly one schedule.
+
+One call at eligible executor turn 12:
 
 ```bash
-# One call at eligible executor turn 12:
---advisor-invocation-policy fixed --advisor-fixed-turn 12
-
-# Or calls at turns 10, 20, 30, ... with an optional finite cap:
---advisor-invocation-policy fixed --advisor-fixed-interval 10 --advisor-max-calls 3
+./target/release/eval-containers run swe-bench \
+  --task-id "$SWE_BENCH_TASK_ID" \
+  --agent opencode-advisory \
+  --model "$EXECUTOR_MODEL" \
+  --gateway-image litellm \
+  --advisor-model "$ADVISOR_MODEL" \
+  --advisor-base-url "$ADVISOR_BASE_URL" \
+  --advisor-context-mode full-session \
+  --advisor-invocation-policy fixed \
+  --advisor-fixed-turn 12 \
+  --advisor-max-calls 1 \
+  --experiment-id fixed-turn-12 \
+  --agent-tag "$IMAGE_TAG" \
+  --local --timeout 1800
 ```
 
-Both forms also require `--advisor-context-mode full-session`, the immutable
-`--agent-tag`, and the normal executor/advisor endpoint options shown above.
+Calls at eligible turns 10, 20, 30, and so on, capped at three advisor calls:
+
+```bash
+./target/release/eval-containers run swe-bench \
+  --task-id "$SWE_BENCH_TASK_ID" \
+  --agent opencode-advisory \
+  --model "$EXECUTOR_MODEL" \
+  --gateway-image litellm \
+  --advisor-model "$ADVISOR_MODEL" \
+  --advisor-base-url "$ADVISOR_BASE_URL" \
+  --advisor-context-mode full-session \
+  --advisor-invocation-policy fixed \
+  --advisor-fixed-interval 10 \
+  --advisor-max-calls 3 \
+  --experiment-id fixed-every-10 \
+  --agent-tag "$IMAGE_TAG" \
+  --local --timeout 1800
+```
+
+Omit `--advisor-max-calls` or set it to `unlimited` for an uncapped recurring
+schedule. The router always inserts one executor turn after an advisor call,
+regardless of the selected fixed interval.
 
 ## 5. Experiment JSON
 
