@@ -323,28 +323,16 @@ class AdvisorServiceTests(unittest.TestCase):
             '"instructions":["/home/agent/.config/opencode/executor-system-prompt.txt"]',
             dockerfile,
         )
-        self.assertIn(
-            'EVAL_EXECUTOR_SYSTEM_PROMPT="${EVAL_EXECUTOR_SYSTEM_PROMPT:-}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT="${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION="${EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION:-append}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_OPENCODE_BASE_SYSTEM_PROMPT="${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_MODEL_CONTEXT_LIMIT="${EVAL_MODEL_CONTEXT_LIMIT:-}"', runner
-        )
-        self.assertIn(
-            'EVAL_MODEL_OUTPUT_LIMIT="${EVAL_MODEL_OUTPUT_LIMIT:-}"', runner
-        )
+        self.assertIn('if [ "${EVAL_AGENT:-}" = "opencode-advisory" ]; then', runner)
+        for assignment in (
+            '"EVAL_EXECUTOR_SYSTEM_PROMPT=${EVAL_EXECUTOR_SYSTEM_PROMPT:-}"',
+            '"EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT=${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}"',
+            '"EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION=${EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION:-append}"',
+            '"EVAL_OPENCODE_BASE_SYSTEM_PROMPT=${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"',
+            '"EVAL_MODEL_CONTEXT_LIMIT=${EVAL_MODEL_CONTEXT_LIMIT:-}"',
+            '"EVAL_MODEL_OUTPUT_LIMIT=${EVAL_MODEL_OUTPUT_LIMIT:-}"',
+        ):
+            self.assertIn(assignment, runner)
         self.assertIn(
             'EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION must be append or prepend',
             dockerfile,
