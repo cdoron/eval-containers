@@ -5,6 +5,13 @@ import os from "os"
 import path from "path"
 // @ts-ignore This absolute path is populated by the agent image.
 import { serializeSessionContext } from "/opt/agent/advisory/context/session-context.mjs"
+// @ts-ignore This absolute path is populated by the agent image.
+import {
+  isAutomatedAdvisorCallID,
+  platformAdvisorMessage,
+} from "/opt/agent/advisory/intervention/protocol.mjs"
+// @ts-ignore This absolute path is populated by the agent image.
+import { takePlatformAdvisorContext } from "/opt/agent/advisory/intervention/platform-context.mjs"
 
 const DESCRIPTIONS_FILE = "/opt/agent/advisory/tool-descriptions.json"
 const EXECUTOR_PROMPT_FILE = "/home/agent/.config/opencode/executor-system-prompt.txt"
@@ -68,6 +75,18 @@ function fullContextMaxBytes(): number {
   return value
 }
 
+function advisorTimeoutMilliseconds(): number {
+  const raw = (process.env.EVAL_ADVISOR_TIMEOUT_SECONDS || "300").trim()
+  if (!/^\d+$/.test(raw)) {
+    throw new Error("EVAL_ADVISOR_TIMEOUT_SECONDS must be an integer from 1 to 86400")
+  }
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 86400) {
+    throw new Error("EVAL_ADVISOR_TIMEOUT_SECONDS must be an integer from 1 to 86400")
+  }
+  return value * 1000
+}
+
 async function exportSession(sessionID: string, directory: string): Promise<unknown> {
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-advisory-"))
   const outputPath = path.join(temporaryDirectory, "session.json")
@@ -103,6 +122,7 @@ async function requestAdvice(request: string, context: string): Promise<string> 
 
   const res = await fetch(`${gateway}/advisory`, {
     method: "POST",
+    signal: AbortSignal.timeout(advisorTimeoutMilliseconds()),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       request,
@@ -134,16 +154,23 @@ export default mode === "full-session"
       description: resolvedDescription.text,
       args: {},
       async execute(_args, toolContext) {
-        const session = await exportSession(toolContext.sessionID, toolContext.directory)
-        const executorSystemPrompt = fs.existsSync(EXECUTOR_PROMPT_FILE)
-          ? fs.readFileSync(EXECUTOR_PROMPT_FILE, "utf8")
-          : (process.env.EVAL_EXECUTOR_SYSTEM_PROMPT || "")
-        const context = serializeSessionContext({
-          session,
-          currentMessageID: toolContext.messageID,
-          executorSystemPrompt,
-        }, fullContextMaxBytes())
-        return requestAdvice(FULL_SESSION_REQUEST, context)
+        const automated = isAutomatedAdvisorCallID(toolContext.callID)
+        let context = automated ? takePlatformAdvisorContext(toolContext.callID) : null
+        if (context === null) {
+          const session = await exportSession(toolContext.sessionID, toolContext.directory)
+          const executorSystemPrompt = fs.existsSync(EXECUTOR_PROMPT_FILE)
+            ? fs.readFileSync(EXECUTOR_PROMPT_FILE, "utf8")
+            : (process.env.EVAL_EXECUTOR_SYSTEM_PROMPT || "")
+          context = serializeSessionContext({
+            session,
+            currentMessageID: toolContext.messageID,
+            executorSystemPrompt,
+          }, fullContextMaxBytes())
+        }
+        const advice = await requestAdvice(FULL_SESSION_REQUEST, context)
+        return automated
+          ? platformAdvisorMessage(advice)
+          : advice
       },
     })
   : tool({

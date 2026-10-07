@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from advisor_service.advisor_runner import get_advice
 from advisor_service.config import DEFAULT_ADVISOR_SYSTEM_PROMPT, resolve_advisor_system_prompt
-from advisor_service.llm_client import _chat_completions_url
+from advisor_service.llm_client import _chat_completions_url, _timeout_seconds
 from advisor_service.main import _SuppressHealthAccessLogs, app
 from advisor_service.telemetry import _trace_endpoint
 
@@ -111,6 +111,14 @@ class AdvisorServiceTests(unittest.TestCase):
             _chat_completions_url("https://litellm.example.com"),
             "https://litellm.example.com/v1/chat/completions",
         )
+
+    def test_advisor_timeout_uses_bounded_runtime_configuration(self) -> None:
+        with patch.dict(os.environ, {"EVAL_ADVISOR_TIMEOUT_SECONDS": "900"}):
+            self.assertEqual(_timeout_seconds(), 900.0)
+        for value in ("0", "86401", "invalid"):
+            with patch.dict(os.environ, {"EVAL_ADVISOR_TIMEOUT_SECONDS": value}):
+                with self.assertRaises(ValueError):
+                    _timeout_seconds()
 
     def test_trace_endpoint_normalization(self) -> None:
         self.assertEqual(
@@ -220,11 +228,83 @@ class AdvisorServiceTests(unittest.TestCase):
         ):
             self.assertIn(field, tool_source)
         self.assertIn("return requestAdvice(args.request, args.context)", tool_source)
-        self.assertIn("return requestAdvice(FULL_SESSION_REQUEST, context)", tool_source)
+        self.assertIn(
+            "const advice = await requestAdvice(FULL_SESSION_REQUEST, context)",
+            tool_source,
+        )
         self.assertIn("process.env.ADVISORY_EXPERIMENT_ID", tool_source)
         self.assertIn("process.env.EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT", tool_source)
         self.assertIn("process.env.EVAL_ADVISOR_TOOL_DESCRIPTION", tool_source)
         self.assertIn("process.env.EVAL_ADVISORY_CONFIG", tool_source)
+        self.assertIn("isAutomatedAdvisorCallID(toolContext.callID)", tool_source)
+        self.assertIn("platformAdvisorMessage(advice)", tool_source)
+
+    def test_platform_invocation_policies_are_wired_through_the_runner(self) -> None:
+        root = Path(__file__).resolve().parents[6]
+        dockerfile = (
+            root / "containers/agents/opencode-advisory/Dockerfile"
+        ).read_text(encoding="utf-8")
+        compose = (
+            root / "containers/agents/opencode-advisory/compose.yaml"
+        ).read_text(encoding="utf-8")
+        runner = (
+            root / "containers/core/runner/run-agent"
+        ).read_text(encoding="utf-8")
+        router = (
+            root
+            / "containers/agents/opencode-advisory/advisory/intervention/random-router.mjs"
+        ).read_text(encoding="utf-8")
+        openjev_policy = (
+            root
+            / "containers/agents/opencode-advisory/advisory/intervention/openjev-policy.mjs"
+        ).read_text(encoding="utf-8")
+        policy_config = (
+            root
+            / "containers/agents/opencode-advisory/advisory/intervention/policy-config.mjs"
+        ).read_text(encoding="utf-8")
+        tool_source = (
+            root
+            / "containers/agents/opencode-advisory/advisory/tools/advisory.ts"
+        ).read_text(encoding="utf-8")
+        client_source = (
+            root
+            / "containers/agents/opencode-advisory/advisory/service/advisor_service/llm_client.py"
+        ).read_text(encoding="utf-8")
+
+        for variable in (
+            "EVAL_ADVISOR_INVOCATION_POLICY",
+            "EVAL_ADVISOR_RANDOM_PROBABILITY",
+            "EVAL_ADVISOR_MAX_CALLS",
+            "EVAL_ADVISOR_RANDOM_SEED",
+        ):
+            self.assertIn(variable, compose)
+            self.assertIn(variable, runner)
+            self.assertTrue(variable in dockerfile or variable in router)
+        self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", compose)
+        self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", runner)
+        self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", tool_source)
+        self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", client_source)
+        self.assertIn("random-router.mjs", dockerfile)
+        self.assertIn("platform advisor invocation requires", dockerfile)
+        self.assertIn("openjev", dockerfile)
+        for variable in (
+            "OPENJEV_BASE_URL",
+            "OPENJEV_API_KEY",
+            "EVAL_ADVISOR_OPENJEV_TIMEOUT_SECONDS",
+            "EVAL_ADVISOR_OPENJEV_INTERVAL",
+            "EVAL_ADVISOR_OPENJEV_POLICY_CONFIG",
+        ):
+            self.assertIn(variable, compose)
+            self.assertIn(variable, runner)
+            self.assertIn(variable, router)
+        self.assertIn("OpenJevInterventionPolicy", router)
+        self.assertIn("parseAdvisorCallLimit", openjev_policy)
+        self.assertIn("'unlimited', or omitted", policy_config)
+        for variable in ("EVAL_ADVISOR_FIXED_TURN", "EVAL_ADVISOR_FIXED_INTERVAL"):
+            self.assertIn(variable, compose)
+            self.assertIn(variable, runner)
+            self.assertIn(variable, router)
+        self.assertIn("FixedInterventionPolicy", router)
 
     def test_executor_system_prompt_uses_opencode_instructions(self) -> None:
         dockerfile = (Path(__file__).resolve().parents[3] / "Dockerfile").read_text(
@@ -243,28 +323,16 @@ class AdvisorServiceTests(unittest.TestCase):
             '"instructions":["/home/agent/.config/opencode/executor-system-prompt.txt"]',
             dockerfile,
         )
-        self.assertIn(
-            'EVAL_EXECUTOR_SYSTEM_PROMPT="${EVAL_EXECUTOR_SYSTEM_PROMPT:-}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT="${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION="${EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION:-append}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_OPENCODE_BASE_SYSTEM_PROMPT="${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_MODEL_CONTEXT_LIMIT="${EVAL_MODEL_CONTEXT_LIMIT:-}"', runner
-        )
-        self.assertIn(
-            'EVAL_MODEL_OUTPUT_LIMIT="${EVAL_MODEL_OUTPUT_LIMIT:-}"', runner
-        )
+        self.assertIn('if [ "${EVAL_AGENT:-}" = "opencode-advisory" ]; then', runner)
+        for assignment in (
+            '"EVAL_EXECUTOR_SYSTEM_PROMPT=${EVAL_EXECUTOR_SYSTEM_PROMPT:-}"',
+            '"EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT=${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}"',
+            '"EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION=${EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION:-append}"',
+            '"EVAL_OPENCODE_BASE_SYSTEM_PROMPT=${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"',
+            '"EVAL_MODEL_CONTEXT_LIMIT=${EVAL_MODEL_CONTEXT_LIMIT:-}"',
+            '"EVAL_MODEL_OUTPUT_LIMIT=${EVAL_MODEL_OUTPUT_LIMIT:-}"',
+        ):
+            self.assertIn(assignment, runner)
         self.assertIn(
             'EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION must be append or prepend',
             dockerfile,
