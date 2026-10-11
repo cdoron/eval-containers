@@ -11,7 +11,7 @@ services:
         condition: service_healthy
       gateway:
         condition: service_healthy
-    image: ${EVAL_REGISTRY:-ghcr.io/exgentic}/evals/appworld--${EVAL_AGENT:-claude-code}:latest
+    image: ${EVAL_REGISTRY:-ghcr.io/exgentic}/evals/appworld--${EVAL_AGENT:-claude-code}:${EVAL_AGENT_TAG:-${EVAL_BENCHMARK_TAG:-latest}}
     platform: linux/amd64
     # AppWorld's own app server + opencode's Bun/Node runtime share this one
     # container; the shared runner.yaml template's 2G cap is too tight for

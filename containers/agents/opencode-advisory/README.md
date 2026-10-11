@@ -58,7 +58,10 @@ router performs the following sequence:
    begins with `call_platform_advisor_`.
 4. OpenCode handles that response like any other tool request and executes the
    existing native advisory tool. The tool calls the advisor sidecar and the
-   independently configured advisor model.
+   independently configured advisor model. The selected context snapshot is
+   retained under the synthetic call ID, so a retry of that tool call receives
+   the same snapshot; a missing snapshot is an error and never falls back to a
+   later live-session export.
 5. OpenCode stores the synthetic assistant tool call and tool result in its
    session. Before each later executor request, the router removes that
    synthetic exchange. A successful advisor result is reinserted as a
@@ -91,6 +94,10 @@ OpenJEV replaces the random draw with an authenticated call to
 `/v1/systemone`. `EVAL_ADVISOR_OPENJEV_INTERVAL=N` asks the classifier only on
 every Nth eligible turn; it defaults to `1`. Classification errors and timeouts
 fail open to a normal executor turn and do not consume the advisor-call budget.
+In local Compose, the isolated runner sends classifier requests to a narrow
+proxy on the advisor sidecar; that sidecar alone joins the upstream network and
+uses `OPENJEV_BASE_URL` and `OPENJEV_API_KEY`. Cluster deployments continue to
+use their configured cluster-reachable OpenJEV URL directly.
 When OpenJEV selects the advisor, the exact compact state that OpenJEV evaluated
 is passed to the advisor, so the classifier and advisor reason over the same
 snapshot. The selected advisor attempt consumes the budget even if the advisor

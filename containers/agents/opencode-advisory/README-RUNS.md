@@ -248,6 +248,9 @@ should call the advisor. `--advisor-openjev-interval N` runs the classifier on
 every Nth eligible turn (`1` means every turn). The classifier timeout is
 independent of the downstream advisor timeout. Classification failures fail
 open to a normal executor turn and do not consume the advisor-call budget.
+For local Compose runs, the runner remains on the isolated network and sends
+only classifier traffic through the advisor sidecar's upstream proxy. The
+external `OPENJEV_BASE_URL` and `OPENJEV_API_KEY` are held by that sidecar.
 
 ```bash
 export OPENJEV_API_KEY="replace-with-helper-token"

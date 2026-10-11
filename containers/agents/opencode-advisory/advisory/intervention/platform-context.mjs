@@ -25,12 +25,10 @@ export function writePlatformAdvisorContext(callID, context) {
   fs.renameSync(temporary, destination)
 }
 
-export function takePlatformAdvisorContext(callID) {
+export function readPlatformAdvisorContext(callID) {
   const source = contextPath(callID)
   try {
-    const context = fs.readFileSync(source, "utf8")
-    fs.unlinkSync(source)
-    return context
+    return fs.readFileSync(source, "utf8")
   } catch (error) {
     if (error?.code === "ENOENT") return null
     throw error
