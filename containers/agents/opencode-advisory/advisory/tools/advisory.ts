@@ -11,7 +11,7 @@ import {
   platformAdvisorMessage,
 } from "/opt/agent/advisory/intervention/protocol.mjs"
 // @ts-ignore This absolute path is populated by the agent image.
-import { takePlatformAdvisorContext } from "/opt/agent/advisory/intervention/platform-context.mjs"
+import { readPlatformAdvisorContext } from "/opt/agent/advisory/intervention/platform-context.mjs"
 
 const DESCRIPTIONS_FILE = "/opt/agent/advisory/tool-descriptions.json"
 const EXECUTOR_PROMPT_FILE = "/home/agent/.config/opencode/executor-system-prompt.txt"
@@ -155,8 +155,11 @@ export default mode === "full-session"
       args: {},
       async execute(_args, toolContext) {
         const automated = isAutomatedAdvisorCallID(toolContext.callID)
-        let context = automated ? takePlatformAdvisorContext(toolContext.callID) : null
-        if (context === null) {
+        let context = automated ? readPlatformAdvisorContext(toolContext.callID) : null
+        if (automated && context === null) {
+          throw new Error(`Missing platform advisor context for ${toolContext.callID}`)
+        }
+        if (!automated) {
           const session = await exportSession(toolContext.sessionID, toolContext.directory)
           const executorSystemPrompt = fs.existsSync(EXECUTOR_PROMPT_FILE)
             ? fs.readFileSync(EXECUTOR_PROMPT_FILE, "utf8")

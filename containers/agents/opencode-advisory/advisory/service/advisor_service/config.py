@@ -15,6 +15,11 @@ ADVISOR_LOG_PAYLOADS: bool = os.getenv("ADVISOR_LOG_PAYLOADS", "false").strip().
     "yes",
     "on",
 }
+OPENJEV_BASE_URL: str = os.getenv("OPENJEV_BASE_URL", "").rstrip("/")
+OPENJEV_API_KEY: str = os.getenv("OPENJEV_API_KEY", "")
+OPENJEV_TIMEOUT_SECONDS: float = float(
+    os.getenv("EVAL_ADVISOR_OPENJEV_TIMEOUT_SECONDS", "30")
+)
 
 DEFAULT_ADVISOR_SYSTEM_PROMPT = (
     "You are a strategic advisor for a coding agent. "

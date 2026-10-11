@@ -6,6 +6,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 os.environ.setdefault("ADVISOR_MODEL", "test-advisor-model")
 
 from fastapi.testclient import TestClient
@@ -16,7 +18,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from advisor_service.advisor_runner import get_advice
 from advisor_service.config import DEFAULT_ADVISOR_SYSTEM_PROMPT, resolve_advisor_system_prompt
 from advisor_service.llm_client import _chat_completions_url, _timeout_seconds
-from advisor_service.main import _SuppressHealthAccessLogs, app
+from advisor_service.main import _SuppressHealthAccessLogs, _openjev_url, app
 from advisor_service.telemetry import _trace_endpoint
 
 
@@ -101,6 +103,47 @@ class AdvisorServiceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json(), {"detail": "Advisor service request failed"})
         self.assertNotIn("secret", response.text)
+
+    def test_openjev_proxy_uses_sidecar_credentials_and_preserves_payload(self) -> None:
+        upstream = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"answers": {"advisor_decision": {"choice": "continue_executor"}}},
+            )
+        )
+        payload = {"model": "openjev", "state": {"turn": 3}, "questions": {}}
+        with (
+            patch("advisor_service.main.config.OPENJEV_BASE_URL", "https://openjev.test/v1"),
+            patch("advisor_service.main.config.OPENJEV_API_KEY", "real-secret"),
+            patch("advisor_service.main.httpx.AsyncClient.post", upstream),
+        ):
+            response = self.client.post(
+                "/openjev/v1/systemone",
+                json=payload,
+                headers={"authorization": "Bearer proxy"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"answers": {"advisor_decision": {"choice": "continue_executor"}}},
+        )
+        args, kwargs = upstream.await_args
+        self.assertEqual(args[0], "https://openjev.test/v1/systemone")
+        self.assertEqual(kwargs["headers"]["authorization"], "Bearer real-secret")
+        self.assertEqual(json.loads(kwargs["content"]), payload)
+
+    def test_openjev_proxy_rejects_missing_upstream_configuration(self) -> None:
+        with patch("advisor_service.main.config.OPENJEV_BASE_URL", ""):
+            response = self.client.post("/openjev/v1/systemone", json={})
+        self.assertEqual(response.status_code, 503)
+
+    def test_openjev_proxy_url_avoids_duplicate_v1(self) -> None:
+        with patch("advisor_service.main.config.OPENJEV_BASE_URL", "https://openjev.test/v1"):
+            self.assertEqual(
+                _openjev_url("v1/systemone"),
+                "https://openjev.test/v1/systemone",
+            )
 
     def test_base_url_normalization(self) -> None:
         self.assertEqual(
@@ -237,6 +280,8 @@ class AdvisorServiceTests(unittest.TestCase):
         self.assertIn("process.env.EVAL_ADVISOR_TOOL_DESCRIPTION", tool_source)
         self.assertIn("process.env.EVAL_ADVISORY_CONFIG", tool_source)
         self.assertIn("isAutomatedAdvisorCallID(toolContext.callID)", tool_source)
+        self.assertIn("readPlatformAdvisorContext(toolContext.callID)", tool_source)
+        self.assertIn("Missing platform advisor context", tool_source)
         self.assertIn("platformAdvisorMessage(advice)", tool_source)
 
     def test_platform_invocation_policies_are_wired_through_the_runner(self) -> None:

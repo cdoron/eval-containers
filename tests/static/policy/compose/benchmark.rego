@@ -56,3 +56,17 @@ deny contains msg if {
 	regex.match(`\$\{EVAL_[A-Z_]*VERSION`, img)
 	msg := sprintf("service %q image uses the EVAL_*_VERSION axis as a tag (use the *_TAG axis): %s", [name, img])
 }
+
+# The combined runner image follows the same precedence as container and job
+# modes: the agent tag wins, then the benchmark tag, then latest.
+deny contains msg if {
+	input.services.runner.image
+	not runner_uses_tag_axes
+	msg := "the runner image must use EVAL_AGENT_TAG with EVAL_BENCHMARK_TAG as its fallback"
+}
+
+runner_uses_tag_axes if {
+	img := input.services.runner.image
+	contains(img, "${EVAL_AGENT_TAG:-")
+	contains(img, "${EVAL_BENCHMARK_TAG:-latest}")
+}
