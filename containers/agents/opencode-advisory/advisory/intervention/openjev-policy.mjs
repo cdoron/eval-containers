@@ -21,7 +21,7 @@ export const DEFAULT_OPENJEV_POLICY_CONFIG = Object.freeze({
     },
   },
   state: {
-    frame: "You are deciding whether an autonomous software-engineering executor should consult an expert advisor before taking its next action.",
+    frame: "You are deciding whether an autonomous software-engineering executor should consult an expert advisor before taking its next action. The state's turn number counts how many such decision points the executor has reached so far in this task.",
     include_turn: true,
     include_advisor_calls_used: true,
     include_advisor_calls_remaining: true,
