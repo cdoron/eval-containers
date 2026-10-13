@@ -35,6 +35,26 @@ function serializedBytes(value) {
   return Buffer.byteLength(JSON.stringify(value), "utf8")
 }
 
+// Rough, dependency-free token estimate (characters / 4, the standard
+// approximation for English text) over the full, untruncated conversation —
+// used only as a summary signal, never to bound what's actually sent.
+export function estimateTokenCount(messages) {
+  const rewritten = rewriteAutomatedAdvisorMessages(Array.isArray(messages) ? messages : [])
+  let characters = 0
+  for (const message of rewritten) {
+    if (!message || typeof message !== "object") continue
+    if (typeof message.content === "string") {
+      characters += message.content.length
+    } else if (message.content !== undefined && message.content !== null) {
+      characters += JSON.stringify(message.content).length
+    }
+    if (Array.isArray(message.tool_calls)) {
+      characters += JSON.stringify(message.tool_calls).length
+    }
+  }
+  return Math.ceil(characters / 4)
+}
+
 function contextMetadata(state, details) {
   const serialized = JSON.stringify(state)
   return {

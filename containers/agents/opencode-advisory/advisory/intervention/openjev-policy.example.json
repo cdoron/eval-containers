@@ -17,6 +17,9 @@
     "include_turn": true,
     "include_advisor_calls_used": true,
     "include_advisor_calls_remaining": true,
+    "include_token_estimate": false,
+    "include_turns_since_last_advisor_call": false,
+    "send_messages_to_classifier": true,
     "context": {
       "max_bytes": 48000,
       "max_string_characters": 12000,

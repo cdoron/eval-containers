@@ -98,10 +98,10 @@ In local Compose, the isolated runner sends classifier requests to a narrow
 proxy on the advisor sidecar; that sidecar alone joins the upstream network and
 uses `OPENJEV_BASE_URL` and `OPENJEV_API_KEY`. Cluster deployments continue to
 use their configured cluster-reachable OpenJEV URL directly.
-When OpenJEV selects the advisor, the exact compact state that OpenJEV evaluated
-is passed to the advisor, so the classifier and advisor reason over the same
-snapshot. The selected advisor attempt consumes the budget even if the advisor
-itself subsequently fails.
+By default, when OpenJEV selects the advisor, the exact compact state that
+OpenJEV evaluated is passed to the advisor, so the classifier and advisor
+reason over the same snapshot. The selected advisor attempt consumes the
+budget even if the advisor itself subsequently fails.
 
 `EVAL_ADVISOR_OPENJEV_POLICY_CONFIG` is schema-versioned JSON. The default and
 a complete editable example are in
@@ -115,13 +115,33 @@ Its main controls are:
 | `request.question.instructions` | Decision instruction shown to OpenJEV. |
 | `request.question.criteria` | Choice labels and the meaning of each choice. |
 | `state.frame` | High-level description of the classification task. |
-| `state.include_*` | Whether turn and advisor-budget counters are included. |
+| `state.include_turn` / `include_advisor_calls_used` / `include_advisor_calls_remaining` | Whether the eligible-turn count and advisor-budget counters are included. |
+| `state.include_token_estimate` | Include a dependency-free estimated token count (characters / 4) for the conversation so far. Off by default. |
+| `state.include_turns_since_last_advisor_call` | Include how many eligible turns have passed since the advisor was last called, with an explicit `advisor_never_called` flag (`turns_since_last_advisor_call` is `null` until the first call). Off by default. |
+| `state.send_messages_to_classifier` | Whether the compact conversation (`state.context.*`-bounded) is included in what's sent to OpenJEV. Defaults to `true`, matching today's behavior. |
 | `state.context.max_bytes` | Maximum serialized classifier-state size. |
 | `state.context.max_string_characters` | Per-message character bound before total-state compaction. |
 | `state.context.preserve_initial_task` | Retain the first message when total-state compaction is needed. |
 | `state.context.preserve_recent_messages` | Fill the remaining budget with recent messages. |
 | `state.context.include_tool_results` | Include or exclude messages whose role is `tool`. Tool-call declarations on assistant messages remain represented. |
 | `decision.call_choice` / `continue_choice` | Map returned OpenJEV choices to router actions. |
+
+#### Metadata-only mode
+
+Setting `state.send_messages_to_classifier` to `false` stops the classifier
+request from ever containing conversation content — the request to OpenJEV
+carries only the enabled summary signals (turn, token estimate, calls
+used/remaining, turns since the last advisor call). `state.context.*` keeps
+governing a separate thing in this mode: the compact conversation snapshot
+the **advisor** receives once OpenJEV selects it. The advisor always gets
+real content when invoked, whether or not the classifier did.
+`turns_since_last_advisor_call` is a soft signal only — nothing in code
+enforces a cooldown; a low value is meant to be weighed by the
+`request.question.instructions` text you configure, the same way the
+existing budget fields are already weighed by the default instructions. A
+complete metadata-only example, including instructions text that explains
+these signals to OpenJEV, is in
+[`advisory/intervention/openjev-policy-metadata-only.example.json`](advisory/intervention/openjev-policy-metadata-only.example.json).
 
 The configuration is recursively merged with the built-in default, so an
 experiment can override only the fields it needs. Set
@@ -348,6 +368,7 @@ docker compose \
 - `advisory/intervention/classifier-context.mjs` — bounded model-visible classifier context
 - `advisory/intervention/openjev-policy.mjs` — authenticated OpenJev decision policy
 - `advisory/intervention/openjev-policy.example.json` — configurable policy example
+- `advisory/intervention/openjev-policy-metadata-only.example.json` — OpenJEV with no conversation content sent to the classifier
 - `advisory/intervention/protocol.mjs` — synthetic-call and platform-message contract
 - `advisory/tool-descriptions.json` — six built-in descriptions
 - `advisory/resolve-config.py` — named executor prompt resolver

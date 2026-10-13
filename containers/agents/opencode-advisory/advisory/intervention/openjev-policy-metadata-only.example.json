@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "request": {
+    "model": "openjev",
+    "question_name": "advisor_decision",
+    "question": {
+      "type": "choice",
+      "instructions": "Decide whether consulting a separate, substantially larger and more capable language model is more likely than not to materially improve the result at this point in the task. You are not shown the conversation itself, only summary signals: the eligible-turn count, an estimated token count, how many advisor calls have been used and remain, and how many turns have passed since the advisor was last called (or that it has never been called). Advisor calls are more expensive than continuing with the executor and, when the budget is finite, should be conserved. A very recent advisor call (within the last several turns) rarely has much new to add -- weigh that against calling again unless the signals suggest the situation has clearly moved on.",
+      "criteria": {
+        "call_advisor": "The expected improvement from an independent second opinion justifies the higher cost and, when the budget is finite, spending one of the limited remaining advisor calls, even without seeing the conversation itself.",
+        "continue_executor": "Based on these summary signals alone, the executor can continue effectively without paying the higher cost or spending a limited advisor call at this point."
+      }
+    }
+  },
+  "state": {
+    "frame": "You are deciding, from summary statistics alone, whether an autonomous software-engineering executor should consult an expert advisor before taking its next action. You are not shown the conversation itself.",
+    "include_turn": true,
+    "include_advisor_calls_used": true,
+    "include_advisor_calls_remaining": true,
+    "include_token_estimate": true,
+    "include_turns_since_last_advisor_call": true,
+    "send_messages_to_classifier": false,
+    "context": {
+      "max_bytes": 48000,
+      "max_string_characters": 12000,
+      "preserve_initial_task": true,
+      "preserve_recent_messages": true,
+      "include_tool_results": true
+    }
+  },
+  "decision": {
+    "call_choice": "call_advisor",
+    "continue_choice": "continue_executor"
+  }
+}

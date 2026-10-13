@@ -145,6 +145,102 @@ test("classifier errors fail open and do not consume an advisor call", async () 
   assert.equal(policy.calls, 0)
 })
 
+test("metadata-only mode omits conversation from the classifier but still gives the advisor real content", async () => {
+  let sentState
+  const messages = [{ role: "user", content: "Fix the failing parser test." }]
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    policyConfig: JSON.stringify({
+      schema_version: 1,
+      state: { send_messages_to_classifier: false },
+    }),
+    fetchImpl: async (_url, options) => {
+      sentState = JSON.parse(options.body).state
+      return response("call_advisor")
+    },
+  })
+  const decision = await policy.decide(executorRequest(messages))
+  assert.equal(decision.selected, true)
+  assert.equal("messages" in sentState, false)
+  assert.equal("context_truncated" in sentState, false)
+  assert.equal("original_message_count" in sentState, false)
+  assert.equal(sentState.turn, 1)
+  const advisorContext = JSON.parse(policy.takeAdvisorContext())
+  assert.deepEqual(advisorContext.messages, messages)
+})
+
+test("token estimate reflects conversation size when enabled", async () => {
+  let sentState
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    policyConfig: JSON.stringify({ schema_version: 1, state: { include_token_estimate: true } }),
+    fetchImpl: async (_url, options) => {
+      sentState = JSON.parse(options.body).state
+      return response("continue_executor")
+    },
+  })
+  await policy.decide(executorRequest([{ role: "user", content: "x".repeat(400) }]))
+  assert.equal(sentState.estimated_tokens, 100)
+})
+
+test("turns since last advisor call starts as never-called and then reports the delta", async () => {
+  const states = []
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    policyConfig: JSON.stringify({ schema_version: 1, state: { include_turns_since_last_advisor_call: true } }),
+    fetchImpl: async (_url, options) => {
+      const state = JSON.parse(options.body).state
+      states.push(state)
+      return response(states.length === 1 ? "call_advisor" : "continue_executor")
+    },
+  })
+  const first = await policy.decide(executorRequest())
+  assert.equal(first.selected, true)
+  assert.equal(states[0].advisor_never_called, true)
+  assert.equal(states[0].turns_since_last_advisor_call, null)
+
+  const forced = await policy.decide(executorRequest())
+  assert.equal(forced.reason, "post-advisor-executor-turn")
+
+  await policy.decide(executorRequest())
+  assert.equal(states[1].advisor_never_called, false)
+  assert.equal(states[1].turns_since_last_advisor_call, 2)
+})
+
+test("metadata-only mode combined with the new signals sends only summary fields", async () => {
+  let sentState
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    policyConfig: JSON.stringify({
+      schema_version: 1,
+      state: {
+        send_messages_to_classifier: false,
+        include_token_estimate: true,
+        include_turns_since_last_advisor_call: true,
+      },
+    }),
+    fetchImpl: async (_url, options) => {
+      sentState = JSON.parse(options.body).state
+      return response("continue_executor")
+    },
+  })
+  await policy.decide(executorRequest())
+  assert.deepEqual(Object.keys(sentState).sort(), [
+    "advisor_calls_remaining",
+    "advisor_calls_unlimited",
+    "advisor_calls_used",
+    "advisor_never_called",
+    "estimated_tokens",
+    "frame",
+    "turn",
+    "turns_since_last_advisor_call",
+  ])
+})
+
 test("compact state preserves the task and recent context within the byte limit", () => {
   const stateConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG.state)
   stateConfig.context.max_bytes = 1400

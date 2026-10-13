@@ -287,6 +287,9 @@ fields are:
 | `state.include_turn` | Include the current eligible turn number. |
 | `state.include_advisor_calls_used` | Include the number of selected advisor attempts. |
 | `state.include_advisor_calls_remaining` | Include the finite remaining budget, or mark it unlimited. |
+| `state.include_token_estimate` | Include a dependency-free estimated token count for the conversation so far. Off by default. |
+| `state.include_turns_since_last_advisor_call` | Include eligible turns since the last advisor call, with an `advisor_never_called` flag. Off by default. |
+| `state.send_messages_to_classifier` | Whether the compact conversation is included in the classifier request. Defaults to `true`. |
 | `state.context.max_bytes` | Total serialized classifier-state limit. |
 | `state.context.max_string_characters` | Per-message character limit before total-state compaction. |
 | `state.context.preserve_initial_task` | Preserve the first message when compacting. |
@@ -294,9 +297,24 @@ fields are:
 | `state.context.include_tool_results` | Include tool-result messages. Assistant tool-call declarations remain represented independently. |
 | `decision.call_choice` / `continue_choice` | Map OpenJEV answer labels to platform actions. |
 
-When OpenJEV selects the advisor, the compact state it classified is also used
-as the advisor context. A selected advisor attempt consumes the budget even if
-the downstream advisor later times out or fails.
+By default, when OpenJEV selects the advisor, the compact state it classified
+is also used as the advisor context. A selected advisor attempt consumes the
+budget even if the downstream advisor later times out or fails.
+
+#### Metadata-only variant
+
+Setting `state.send_messages_to_classifier` to `false` stops conversation
+content from ever reaching OpenJEV; only the enabled summary signals are
+sent. The advisor still receives the real compact conversation (bounded by
+`state.context.*`) once selected -- only the classifier's view changes. Swap
+the policy config file in the command above for
+[`openjev-policy-metadata-only.example.json`](advisory/intervention/openjev-policy-metadata-only.example.json)
+to try it:
+
+```bash
+  --advisor-openjev-policy-config-file \
+    containers/agents/opencode-advisory/advisory/intervention/openjev-policy-metadata-only.example.json \
+```
 
 ### Fixed scheduling
 

@@ -1,7 +1,7 @@
 "use strict"
 
 import crypto from "node:crypto"
-import { buildClassifierState } from "./classifier-context.mjs"
+import { buildClassifierState, estimateTokenCount } from "./classifier-context.mjs"
 import { parseAdvisorCallLimit, parseOptionalPositiveInteger } from "./policy-config.mjs"
 
 export { parseAdvisorCallLimit } from "./policy-config.mjs"
@@ -25,6 +25,9 @@ export const DEFAULT_OPENJEV_POLICY_CONFIG = Object.freeze({
     include_turn: true,
     include_advisor_calls_used: true,
     include_advisor_calls_remaining: true,
+    include_token_estimate: false,
+    include_turns_since_last_advisor_call: false,
+    send_messages_to_classifier: true,
     context: {
       max_bytes: 48000,
       max_string_characters: 12000,
@@ -116,6 +119,9 @@ export function parseOpenJevPolicyConfig(raw = "") {
     "include_turn",
     "include_advisor_calls_used",
     "include_advisor_calls_remaining",
+    "include_token_estimate",
+    "include_turns_since_last_advisor_call",
+    "send_messages_to_classifier",
   ]) {
     if (typeof config.state[key] !== "boolean") throw new Error(`OpenJev state.${key} must be boolean`)
   }
@@ -179,6 +185,7 @@ export class OpenJevInterventionPolicy {
     this.fetchImpl = fetchImpl
     this.eligibleTurns = 0
     this.calls = 0
+    this.lastAdvisorCallTurn = null
     this.forceExecutorNext = false
     this.pendingAdvisorContext = null
   }
@@ -216,6 +223,7 @@ export class OpenJevInterventionPolicy {
       return { selected: false, reason: "openjev-interval", turn, calls: this.calls }
     }
 
+    const turnsSinceLastCall = this.lastAdvisorCallTurn === null ? null : turn - this.lastAdvisorCallTurn
     let context
     const started = Date.now()
     try {
@@ -226,6 +234,26 @@ export class OpenJevInterventionPolicy {
         maxCalls: this.maxCalls,
         stateConfig: this.config.state,
       })
+      const summaryExtras = {}
+      if (this.config.state.include_token_estimate) {
+        summaryExtras.estimated_tokens = estimateTokenCount(request.messages)
+      }
+      if (this.config.state.include_turns_since_last_advisor_call) {
+        if (turnsSinceLastCall === null) {
+          summaryExtras.turns_since_last_advisor_call = null
+          summaryExtras.advisor_never_called = true
+        } else {
+          summaryExtras.turns_since_last_advisor_call = turnsSinceLastCall
+          summaryExtras.advisor_never_called = false
+        }
+      }
+      let classifierState
+      if (this.config.state.send_messages_to_classifier) {
+        classifierState = { ...context.state, ...summaryExtras }
+      } else {
+        const { messages, context_truncated, original_message_count, ...withoutMessages } = context.state
+        classifierState = { ...withoutMessages, ...summaryExtras }
+      }
       const response = await this.fetchImpl(this.url, {
         method: "POST",
         signal: AbortSignal.timeout(this.timeoutSeconds * 1000),
@@ -235,7 +263,7 @@ export class OpenJevInterventionPolicy {
         },
         body: JSON.stringify({
           model: this.config.request.model,
-          state: context.state,
+          state: classifierState,
           questions: {
             [this.config.request.question_name]: this.config.request.question,
           },
@@ -259,6 +287,7 @@ export class OpenJevInterventionPolicy {
       if (selected) {
         this.pendingAdvisorContext = JSON.stringify(context.state)
         this.calls += 1
+        this.lastAdvisorCallTurn = turn
         this.forceExecutorNext = true
       }
       return {
