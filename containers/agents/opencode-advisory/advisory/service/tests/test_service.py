@@ -447,7 +447,7 @@ class AdvisorServiceTests(unittest.TestCase):
             dockerfile,
         )
 
-    def test_executor_and_advisor_credentials_are_configured_separately(self) -> None:
+    def test_executor_advisor_and_openjev_credentials_are_configured_separately(self) -> None:
         root = Path(__file__).resolve().parents[6]
         env_example = (root / ".env.example").read_text(encoding="utf-8")
         shared_compose = (
@@ -462,14 +462,24 @@ class AdvisorServiceTests(unittest.TestCase):
             "OPENAI_API_KEY",
             "ADVISOR_BASE_URL",
             "ADVISOR_API_KEY",
+            "OPENJEV_BASE_URL",
+            "OPENJEV_API_KEY",
         ):
             self.assertIn(f"{name}=", env_example)
         self.assertIn("OPENAI_API_BASE: ${OPENAI_API_BASE:?}", shared_compose)
         self.assertIn("OPENAI_API_KEY: ${OPENAI_API_KEY:?}", shared_compose)
         self.assertIn("ADVISOR_BASE_URL: ${ADVISOR_BASE_URL:-}", advisor_compose)
         self.assertIn("ADVISOR_API_KEY: ${ADVISOR_API_KEY:-none}", advisor_compose)
+        self.assertIn("OPENJEV_BASE_URL: ${OPENJEV_BASE_URL:-}", advisor_compose)
+        self.assertIn("OPENJEV_API_KEY: ${OPENJEV_API_KEY:-}", advisor_compose)
         self.assertNotIn("ADVISOR_BASE_URL=$OPENAI_API_BASE", env_example)
         self.assertNotIn("ADVISOR_API_KEY=$OPENAI_API_KEY", env_example)
+
+        run_guide = (
+            root / "containers" / "agents" / "opencode-advisory" / "README-RUNS.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn('--openjev-base-url "$OPENJEV_BASE_URL"', run_guide)
+        self.assertNotIn("openjev-svc.advisor-erel", run_guide)
 
     def test_advisor_system_prompt_supports_default_direct_and_named_sources(self) -> None:
         with patch.dict(

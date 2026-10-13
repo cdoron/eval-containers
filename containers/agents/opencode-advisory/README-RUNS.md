@@ -27,7 +27,10 @@ export ADVISOR_MODEL=aws/claude-opus-4-8
 `OPENAI_API_BASE` / `OPENAI_API_KEY` belong to the executor gateway.
 `ADVISOR_BASE_URL` / `ADVISOR_API_KEY` belong to the advisor service. They may
 point to the same endpoint, but no value is copied or inherited between them.
-Keep all four in `.env`; experiment JSON deliberately contains no secrets.
+`OPENJEV_BASE_URL` / `OPENJEV_API_KEY` belong to the optional OpenJEV
+classifier. Keep the values needed by the selected policy in `.env`;
+experiment JSON deliberately contains no secrets or installation-specific
+endpoints.
 
 ## 2. Rebuild after these changes
 
@@ -253,7 +256,21 @@ only classifier traffic through the advisor sidecar's upstream proxy. The
 external `OPENJEV_BASE_URL` and `OPENJEV_API_KEY` are held by that sidecar.
 
 ```bash
-export OPENJEV_API_KEY="replace-with-helper-token"
+: "${OPENJEV_BASE_URL:?missing OPENJEV_BASE_URL}"
+: "${OPENJEV_API_KEY:?missing OPENJEV_API_KEY}"
+
+OPENJEV_POLICY_TEMPLATE=containers/agents/opencode-advisory/advisory/intervention/openjev-policy.example.json
+export OPENJEV_INPUT_MODE=context
+
+case "$OPENJEV_INPUT_MODE" in
+  context|features_only|features_plus_context) ;;
+  *) echo "invalid OPENJEV_INPUT_MODE: $OPENJEV_INPUT_MODE" >&2; exit 2 ;;
+esac
+
+export OPENJEV_POLICY_FILE="${TMPDIR:-/tmp}/openjev-policy-${OPENJEV_INPUT_MODE}.json"
+jq --arg input_mode "$OPENJEV_INPUT_MODE" \
+  '.state.input_mode = $input_mode' \
+  "$OPENJEV_POLICY_TEMPLATE" > "$OPENJEV_POLICY_FILE"
 
 ./target/release/eval-containers run swe-bench \
   --task-id "$SWE_BENCH_TASK_ID" \
@@ -264,9 +281,8 @@ export OPENJEV_API_KEY="replace-with-helper-token"
   --advisor-base-url "$ADVISOR_BASE_URL" \
   --advisor-context-mode full-session \
   --advisor-invocation-policy openjev \
-  --openjev-base-url http://openjev-svc.advisor-erel.svc.cluster.local:3000 \
-  --advisor-openjev-policy-config-file \
-    containers/agents/opencode-advisory/advisory/intervention/openjev-policy.example.json \
+  --openjev-base-url "$OPENJEV_BASE_URL" \
+  --advisor-openjev-policy-config-file "$OPENJEV_POLICY_FILE" \
   --advisor-openjev-timeout-seconds 30 \
   --advisor-openjev-interval 1 \
   --advisor-max-calls unlimited \
@@ -274,6 +290,20 @@ export OPENJEV_API_KEY="replace-with-helper-token"
   --agent-tag "$IMAGE_TAG" \
   --local --timeout 1800
 ```
+
+Set `OPENJEV_INPUT_MODE` before generating the policy file:
+
+| Value | State sent to OpenJEV |
+|---|---|
+| `context` | Compacted conversation context only. This is the backward-compatible default. |
+| `features_only` | Initial system/task prompts plus structured execution features, without conversation history. |
+| `features_plus_context` | The same prompts and features plus compacted conversation context. |
+
+The external OpenJEV hostname is never baked into the image or policy file.
+For local Compose, only the advisor sidecar receives the operator-provided URL
+and credential; the isolated runner uses the sidecar's internal proxy. For a
+different installation, set that installation's own `OPENJEV_BASE_URL` and
+`OPENJEV_API_KEY` without changing repository files.
 
 The policy file is merged over the built-in defaults. The most commonly changed
 fields are:
@@ -284,15 +314,24 @@ fields are:
 | `request.question.instructions` | Instruction used to decide whether advice is worthwhile. |
 | `request.question.criteria` | Choice names and descriptions presented to OpenJEV. |
 | `state.frame` | Short description of the classification task. |
+| `state.input_mode` | `context`, `features_only`, or `features_plus_context`. Feature modes also preserve the initial system and task prompts as separate fields. |
 | `state.include_turn` | Include the current eligible turn number. |
 | `state.include_advisor_calls_used` | Include the number of selected advisor attempts. |
 | `state.include_advisor_calls_remaining` | Include the finite remaining budget, or mark it unlimited. |
 | `state.context.max_bytes` | Total serialized classifier-state limit. |
 | `state.context.max_string_characters` | Per-message character limit before total-state compaction. |
-| `state.context.preserve_initial_task` | Preserve the first message when compacting. |
+| `state.context.preserve_initial_task` | Preserve the first two chronological messages—normally the initial system prompt and user task—when compacting. |
 | `state.context.preserve_recent_messages` | Retain as many recent messages as fit. |
 | `state.context.include_tool_results` | Include tool-result messages. Assistant tool-call declarations remain represented independently. |
+| `state.features.max_tool_result_characters` | Head-plus-tail limit for the latest matched tool result. The tool-call arguments remain exact. |
+| `state.features.max_latest_advice_characters` | Head-plus-tail limit for the latest successful advisor response. |
 | `decision.call_choice` / `continue_choice` | Map OpenJEV answer labels to platform actions. |
+
+The structured feature block reports tool-call distribution, executor calls
+since the latest advice, total advisor and executor model calls, the latest
+non-advisor tool call plus its matched result, and the latest successful advice.
+`features_plus_context` adds the existing initial-pair/recent-message compaction
+on top of the same feature block.
 
 When OpenJEV selects the advisor, the compact state it classified is also used
 as the advisor context. A selected advisor attempt consumes the budget even if

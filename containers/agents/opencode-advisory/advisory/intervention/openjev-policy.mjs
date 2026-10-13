@@ -21,6 +21,7 @@ export const DEFAULT_OPENJEV_POLICY_CONFIG = Object.freeze({
     },
   },
   state: {
+    input_mode: "context",
     frame: "You are deciding whether an autonomous software-engineering executor should consult an expert advisor before taking its next action.",
     include_turn: true,
     include_advisor_calls_used: true,
@@ -31,6 +32,10 @@ export const DEFAULT_OPENJEV_POLICY_CONFIG = Object.freeze({
       preserve_initial_task: true,
       preserve_recent_messages: true,
       include_tool_results: true,
+    },
+    features: {
+      max_tool_result_characters: 12000,
+      max_latest_advice_characters: 12000,
     },
   },
   decision: {
@@ -62,6 +67,10 @@ function mergeConfig(value) {
       context: {
         ...DEFAULT_OPENJEV_POLICY_CONFIG.state.context,
         ...(value.state?.context || {}),
+      },
+      features: {
+        ...DEFAULT_OPENJEV_POLICY_CONFIG.state.features,
+        ...(value.state?.features || {}),
       },
     },
     decision: {
@@ -112,6 +121,9 @@ export function parseOpenJevPolicyConfig(raw = "") {
   if (config.state.frame !== null && typeof config.state.frame !== "string") {
     throw new Error("OpenJev state.frame must be a string or null")
   }
+  if (!["context", "features_only", "features_plus_context"].includes(config.state.input_mode)) {
+    throw new Error("OpenJev state.input_mode must be context, features_only, or features_plus_context")
+  }
   for (const key of [
     "include_turn",
     "include_advisor_calls_used",
@@ -130,6 +142,11 @@ export function parseOpenJevPolicyConfig(raw = "") {
   if (!Number.isSafeInteger(config.state.context.max_string_characters) || config.state.context.max_string_characters < 64) {
     throw new Error("OpenJev state.context.max_string_characters must be an integer of at least 64")
   }
+  for (const key of ["max_tool_result_characters", "max_latest_advice_characters"]) {
+    if (!Number.isSafeInteger(config.state.features[key]) || config.state.features[key] < 64) {
+      throw new Error(`OpenJev state.features.${key} must be an integer of at least 64`)
+    }
+  }
   return config
 }
 
@@ -142,11 +159,17 @@ function systemOneURL(baseURL) {
 }
 
 function classifierError(error, latencyMs, contextMetadata) {
+  const message = typeof error?.message === "string" ? error.message : ""
+  const causeName = typeof error?.cause?.name === "string" ? error.cause.name : ""
+  const causeMessage = typeof error?.cause?.message === "string" ? error.cause.message : ""
   return {
     selected: false,
     reason: "openjev-error",
     classifier: {
       error: error.name || "Error",
+      ...(message ? { error_message: message } : {}),
+      ...(causeName ? { error_cause: causeName } : {}),
+      ...(causeMessage ? { error_cause_message: causeMessage } : {}),
       ...(Number.isSafeInteger(error.status) ? { http_status: error.status } : {}),
       latency_ms: latencyMs,
       ...contextMetadata,

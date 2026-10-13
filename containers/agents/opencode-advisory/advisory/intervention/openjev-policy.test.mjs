@@ -7,6 +7,7 @@ import {
   parseAdvisorCallLimit,
   parseOpenJevPolicyConfig,
 } from "./openjev-policy.mjs"
+import { platformAdvisorMessage } from "./protocol.mjs"
 
 function executorRequest(messages = [{ role: "user", content: "Fix the failing parser test." }]) {
   return { model: "executor", messages }
@@ -44,12 +45,19 @@ test("accepts configurable framing, wording, labels, and context bounds", () => 
         criteria: { yes: "Consult now.", no: "Continue now." },
       },
     },
-    state: { frame: "Custom frame", context: { max_bytes: 2048 } },
+    state: {
+      input_mode: "features_only",
+      frame: "Custom frame",
+      context: { max_bytes: 2048 },
+      features: { max_tool_result_characters: 256 },
+    },
     decision: { call_choice: "yes", continue_choice: "no" },
   }))
   assert.equal(config.request.model, "custom-openjev")
   assert.equal(config.state.frame, "Custom frame")
+  assert.equal(config.state.input_mode, "features_only")
   assert.equal(config.state.context.max_bytes, 2048)
+  assert.equal(config.state.features.max_tool_result_characters, 256)
   assert.equal(config.decision.call_choice, "yes")
   assert.deepEqual(Object.keys(config.request.question.criteria), ["yes", "no"])
 })
@@ -141,15 +149,38 @@ test("classifier errors fail open and do not consume an advisor call", async () 
   const decision = await policy.decide(executorRequest())
   assert.equal(decision.selected, false)
   assert.equal(decision.reason, "openjev-error")
+  assert.equal(decision.classifier.error, "OpenJevHTTPError")
+  assert.equal(decision.classifier.error_message, "OpenJev returned HTTP 401")
   assert.equal(decision.classifier.http_status, 401)
   assert.equal(policy.calls, 0)
 })
 
-test("compact state preserves the task and recent context within the byte limit", () => {
+test("classifier transport errors retain their message and nested cause", async () => {
+  const cause = new Error("getaddrinfo ENOTFOUND openjev-svc.wrong.svc.cluster.local")
+  cause.name = "DNSError"
+  const transportError = new TypeError("fetch failed", { cause })
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev-svc.wrong.svc.cluster.local:3000",
+    apiKey: "token",
+    maxCalls: "unlimited",
+    fetchImpl: async () => { throw transportError },
+  })
+  const decision = await policy.decide(executorRequest())
+  assert.equal(decision.selected, false)
+  assert.equal(decision.reason, "openjev-error")
+  assert.equal(decision.classifier.error, "TypeError")
+  assert.equal(decision.classifier.error_message, "fetch failed")
+  assert.equal(decision.classifier.error_cause, "DNSError")
+  assert.match(decision.classifier.error_cause_message, /ENOTFOUND openjev-svc\.wrong/)
+  assert.equal(policy.calls, 0)
+})
+
+test("compact state preserves the initial system and task messages plus recent context", () => {
   const stateConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG.state)
   stateConfig.context.max_bytes = 1400
   stateConfig.context.max_string_characters = 500
   const messages = [
+    { role: "system", content: "Initial system prompt" },
     { role: "user", content: "Initial task" },
     ...Array.from({ length: 10 }, (_, index) => ({ role: "tool", content: `${index}: ${"x".repeat(400)}` })),
     { role: "assistant", content: "Most recent reasoning" },
@@ -162,7 +193,121 @@ test("compact state preserves the task and recent context within the byte limit"
     stateConfig,
   })
   assert.equal(result.metadata.truncated, true)
-  assert.equal(result.state.messages[0].content, "Initial task")
+  assert.equal(result.state.messages[0].content, "Initial system prompt")
+  assert.equal(result.state.messages[1].content, "Initial task")
   assert.equal(result.state.messages.at(-1).content, "Most recent reasoning")
   assert.ok(result.metadata.bytes <= 1400)
+})
+
+test("feature-only state preserves prompts and exposes bounded execution features", () => {
+  const stateConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG.state)
+  stateConfig.input_mode = "features_only"
+  stateConfig.include_advisor_calls_remaining = false
+  stateConfig.features.max_tool_result_characters = 160
+  stateConfig.features.max_latest_advice_characters = 160
+  const exactArguments = JSON.stringify({ path: "src/parser.py", query: "a\\\"b" })
+  const messages = [
+    { role: "system", content: "Executor system instructions" },
+    { role: "user", content: "Fix the parser regression" },
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "call_read_1", type: "function", function: { name: "read", arguments: "{}" } }],
+    },
+    { role: "tool", tool_call_id: "call_read_1", content: "file contents" },
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "call_platform_advisor_3_1", type: "function", function: { name: "advisory", arguments: "{}" } }],
+    },
+    { role: "tool", tool_call_id: "call_platform_advisor_3_1", content: platformAdvisorMessage("Inspect the parser state before editing.") },
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "call_bash_2", type: "function", function: { name: "bash", arguments: exactArguments } }],
+    },
+    { role: "tool", tool_call_id: "call_bash_2", content: `HEAD-${"x".repeat(300)}-TAIL` },
+  ]
+  const result = buildClassifierState({
+    request: executorRequest(messages),
+    turn: 5,
+    calls: 1,
+    maxCalls: null,
+    stateConfig,
+  })
+
+  assert.equal(result.state.initial_system_prompt, "Executor system instructions")
+  assert.equal(result.state.task_prompt, "Fix the parser regression")
+  assert.equal(result.state.messages, undefined)
+  assert.equal(result.state.advisor_calls_remaining, undefined)
+  assert.deepEqual(result.state.features.tool_call_distribution, {
+    total: 2,
+    by_name: {
+      bash: { count: 1, fraction: 0.5 },
+      read: { count: 1, fraction: 0.5 },
+    },
+  })
+  assert.equal(result.state.features.turns_since_last_advisor_call, 1)
+  assert.equal(result.state.features.advisor_calls_total, 1)
+  assert.equal(result.state.features.model_calls_total, 2)
+  assert.equal(result.state.features.latest_tool_call.name, "bash")
+  assert.equal(result.state.features.latest_tool_call.arguments, exactArguments)
+  assert.equal(result.state.features.latest_tool_call.result_truncated, true)
+  assert.match(result.state.features.latest_tool_call.result, /^HEAD-/)
+  assert.match(result.state.features.latest_tool_call.result, /-TAIL$/)
+  assert.equal(result.state.features.latest_advice.content, "Inspect the parser state before editing.")
+  assert.equal(result.metadata.input_mode, "features_only")
+})
+
+test("feature-plus-context state uses the existing recent-message compaction", () => {
+  const stateConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG.state)
+  stateConfig.input_mode = "features_plus_context"
+  stateConfig.include_advisor_calls_remaining = false
+  stateConfig.context.max_bytes = 1800
+  stateConfig.context.max_string_characters = 500
+  const messages = [
+    { role: "system", content: "Executor system instructions" },
+    { role: "user", content: "Initial task" },
+    ...Array.from({ length: 10 }, (_, index) => ({ role: "tool", content: `${index}: ${"x".repeat(400)}` })),
+    { role: "assistant", content: "Most recent reasoning" },
+  ]
+  const result = buildClassifierState({
+    request: executorRequest(messages),
+    turn: 4,
+    calls: 0,
+    maxCalls: null,
+    stateConfig,
+  })
+
+  assert.equal(result.state.initial_system_prompt, "Executor system instructions")
+  assert.equal(result.state.task_prompt, "Initial task")
+  assert.equal(result.state.messages.at(-1).content, "Most recent reasoning")
+  assert.equal(result.metadata.input_mode, "features_plus_context")
+  assert.equal(result.metadata.truncated, true)
+  assert.ok(result.metadata.bytes <= 1800)
+})
+
+test("turns since advisor counts a failed initiated call even without advice", () => {
+  const stateConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG.state)
+  stateConfig.input_mode = "features_only"
+  const messages = [
+    { role: "system", content: "System" },
+    { role: "user", content: "Task" },
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "call_platform_advisor_1_1", type: "function", function: { name: "advisory", arguments: "{}" } }],
+    },
+    { role: "tool", tool_call_id: "call_platform_advisor_1_1", content: "The operation timed out." },
+    { role: "assistant", content: "Continuing after the failed advisor call." },
+  ]
+  const result = buildClassifierState({
+    request: executorRequest(messages),
+    turn: 3,
+    calls: 1,
+    maxCalls: null,
+    stateConfig,
+  })
+  assert.equal(result.state.features.turns_since_last_advisor_call, 1)
+  assert.equal(result.state.features.latest_advice, null)
 })
