@@ -115,13 +115,22 @@ Its main controls are:
 | `request.question.instructions` | Decision instruction shown to OpenJEV. |
 | `request.question.criteria` | Choice labels and the meaning of each choice. |
 | `state.frame` | High-level description of the classification task. |
+| `state.input_mode` | `context` (legacy compact history), `features_only`, or `features_plus_context`. Feature modes always include the initial system prompt and initial user task prompt. |
 | `state.include_*` | Whether turn and advisor-budget counters are included. |
 | `state.context.max_bytes` | Maximum serialized classifier-state size. |
 | `state.context.max_string_characters` | Per-message character bound before total-state compaction. |
-| `state.context.preserve_initial_task` | Retain the first message when total-state compaction is needed. |
+| `state.context.preserve_initial_task` | Retain the first two chronological messages (normally the initial system prompt and user task) when total-state compaction is needed. |
 | `state.context.preserve_recent_messages` | Fill the remaining budget with recent messages. |
 | `state.context.include_tool_results` | Include or exclude messages whose role is `tool`. Tool-call declarations on assistant messages remain represented. |
+| `state.features.max_tool_result_characters` | Head-plus-tail character bound for the latest matched tool result; tool arguments are not shortened. |
+| `state.features.max_latest_advice_characters` | Head-plus-tail character bound for the latest successful advisor response. |
 | `decision.call_choice` / `continue_choice` | Map returned OpenJEV choices to router actions. |
+
+Feature modes expose the distribution of non-advisor tool calls, completed
+executor model-call count, completed executor calls since the latest successful
+advice, total initiated advisor calls, latest non-advisor tool call and matched
+result, and latest successful advice. Synthetic platform advisory calls are not
+counted as executor tool or model calls.
 
 The configuration is recursively merged with the built-in default, so an
 experiment can override only the fields it needs. Set
@@ -278,23 +287,28 @@ the prefixed system message. A timeout or other tool error is removed together
 with the synthetic tool call before the executor request is forwarded. The
 failed attempt still consumes one call from `EVAL_ADVISOR_MAX_CALLS`.
 
-Do not commit credentials. See
+Do not commit credentials or installation-specific endpoints. See
 [`advisory/service/.env.example`](advisory/service/.env.example) for safe
 placeholders.
 
-The executor and advisor credentials are independent. Put all four values in
-the repository `.env` when using this agent:
+The executor, advisor, and optional OpenJEV classifier configurations are
+independent. Put the values needed by the selected policy in the repository
+`.env` when using this agent:
 
 ```dotenv
 OPENAI_API_BASE=https://executor.example.com/v1
 OPENAI_API_KEY=replace-with-executor-key
 ADVISOR_BASE_URL=https://advisor.example.com/v1
 ADVISOR_API_KEY=replace-with-advisor-key
+OPENJEV_BASE_URL=https://openjev.example.com
+OPENJEV_API_KEY=replace-with-openjev-key
 ```
 
 The `OPENAI_*` pair is passed only to the normal executor gateway, while the
-`ADVISOR_*` pair is passed only to the advisor sidecar. The pairs may contain
-the same values, but neither pair falls back to the other.
+`ADVISOR_*` pair configures advisor inference and the `OPENJEV_*` pair
+configures classification. The pairs may contain related values, but none
+falls back to another. OpenJEV settings are required only when the invocation
+policy is `openjev`.
 
 ## Tracing
 
