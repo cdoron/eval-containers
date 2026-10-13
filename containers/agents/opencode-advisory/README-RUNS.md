@@ -27,30 +27,54 @@ export ADVISOR_MODEL=aws/claude-opus-4-8
 `OPENAI_API_BASE` / `OPENAI_API_KEY` belong to the executor gateway.
 `ADVISOR_BASE_URL` / `ADVISOR_API_KEY` belong to the advisor service. They may
 point to the same endpoint, but no value is copied or inherited between them.
-Keep all four in `.env`; experiment JSON deliberately contains no secrets.
+`OPENJEV_BASE_URL` / `OPENJEV_API_KEY` belong to the optional OpenJEV
+classifier. Keep the values needed by the selected policy in `.env`;
+experiment JSON deliberately contains no secrets or installation-specific
+endpoints.
 
 ## 2. Rebuild after these changes
+
+Use a new immutable tag for this code. Do not publish it as `latest` and do
+not reuse a tag from an earlier experiment.
 
 ```bash
 cargo build --release --manifest-path cli/Cargo.toml
 
-./target/release/eval-containers build agent opencode-advisory \
+export IMAGE_TAG=platform-random-v1
+
+TAG="$IMAGE_TAG" \
+  ./target/release/eval-containers build agent opencode-advisory \
   --platform "$EVAL_BUILD_PLATFORM"
 
-./target/release/eval-containers build bench swe-bench \
-  --task-id "$SWE_BENCH_TASK_ID" \
-  --platform "$EVAL_BUILD_PLATFORM"
-
-./target/release/eval-containers build eval swe-bench \
+TAG="$IMAGE_TAG" EVAL_BENCHMARK_TAG=latest EVAL_AGENT_TAG="$IMAGE_TAG" \
+  ./target/release/eval-containers build eval swe-bench \
   --task-id "$SWE_BENCH_TASK_ID" \
   --agent opencode-advisory \
   --model litellm \
-  --platform "$EVAL_BUILD_PLATFORM" \
-  --no-pull
+  --platform "$EVAL_BUILD_PLATFORM"
 ```
 
-Rebuild LiteLLM only if its image changed. Rebuild other benchmark/task
-combinations only when you intend to run them.
+The eval build reads the unchanged task benchmark from `:latest`, reads the
+new agent from `:$IMAGE_TAG`, and writes the combined eval to `:$IMAGE_TAG`.
+It does not move any existing tag. Rebuild LiteLLM or a benchmark image only
+if that component changed.
+
+For an external registry, those commands address images in these forms:
+
+```text
+<registry>/agents/opencode-advisory:<IMAGE_TAG>
+<registry>/evals/swe-bench-<lowercase-task-id>--opencode-advisory:<IMAGE_TAG>
+```
+
+Shared-environment benchmarks instead use
+`<registry>/evals/<benchmark>--opencode-advisory:<IMAGE_TAG>`. SWE-bench is
+per-task, so every task to be run needs its own combined eval image under the
+new tag. The one tagged agent image is shared by the executor and advisor
+sidecar, and the same platform-capable tag can run random, OpenJEV, or fixed
+conditions; those policies are runtime configuration, not separate image
+variants. Pass the tag with `--agent-tag "$IMAGE_TAG"` or set top-level JSON
+`"agent_tag": "<IMAGE_TAG>"`. Existing self-initiated tags remain usable and
+are not overwritten.
 
 ## 3. Text-source model
 
@@ -166,6 +190,200 @@ Built-in tool description plus default advisor system prompt:
   --local --timeout 1800
 ```
 
+### Platform-initiated call lifecycle
+
+`self-initiated` is the default: the executor sees the native `advisory` tool
+and decides when to call it. `random`, `openjev`, and `fixed` move that decision
+to the platform. All three platform policies require `full-session` context and
+must run without an executor system-prompt addition.
+
+On a selected turn, the local router bypasses the executor model and returns a
+synthetic assistant `advisory` tool call to OpenCode. OpenCode executes the
+normal advisory tool, so the advisor sidecar, tracing, and persisted tool
+exchange remain unchanged. On later executor requests, the router removes the
+synthetic call/result pair and converts successful advice into a platform
+`system` message. Failed advice is omitted from executor context. Every selected
+attempt consumes the call budget, and the next eligible request is forced to be
+a normal executor turn.
+
+The common platform settings are:
+
+| Flag | Meaning |
+|---|---|
+| `--advisor-context-mode full-session` | Required for every platform policy. |
+| `--advisor-max-calls N` | Limit each task to N attempted platform advisor calls. |
+| `--advisor-max-calls unlimited` | Explicitly remove the per-task advisor-call cap; omission has the same meaning. |
+| `--executor-max-turns N` | Optional platform cap on eligible executor turns; `0` is unlimited. |
+| `--agent-tag TAG` | Select the immutable agent/eval image containing the policy implementation. Use a non-`latest` experiment tag. |
+
+Do not add any `--executor-system-prompt*` option to a platform-initiated
+condition. The platform router supplies the intervention independently of
+executor prompting and hides the advisory tool from the executor model.
+
+### Random selection
+
+`--advisor-random-probability` is the probability of selection at each eligible
+turn. The draw is derived from the seed and turn number, so a run is
+reproducible; use a different seed for each intended repetition.
+
+```bash
+./target/release/eval-containers run swe-bench \
+  --task-id "$SWE_BENCH_TASK_ID" \
+  --agent opencode-advisory \
+  --model "$EXECUTOR_MODEL" \
+  --gateway-image litellm \
+  --advisor-model "$ADVISOR_MODEL" \
+  --advisor-base-url "$ADVISOR_BASE_URL" \
+  --advisor-context-mode full-session \
+  --advisor-invocation-policy random \
+  --advisor-random-probability 0.25 \
+  --advisor-max-calls 3 \
+  --advisor-random-seed random-v1-repetition-1 \
+  --experiment-id random-v1-repetition-1 \
+  --agent-tag "$IMAGE_TAG" \
+  --local --timeout 1800
+```
+
+### OpenJEV selection
+
+OpenJEV receives a bounded, model-visible state and answers whether the platform
+should call the advisor. `--advisor-openjev-interval N` runs the classifier on
+every Nth eligible turn (`1` means every turn). The classifier timeout is
+independent of the downstream advisor timeout. Classification failures fail
+open to a normal executor turn and do not consume the advisor-call budget.
+For local Compose runs, the runner remains on the isolated network and sends
+only classifier traffic through the advisor sidecar's upstream proxy. The
+external `OPENJEV_BASE_URL` and `OPENJEV_API_KEY` are held by that sidecar.
+
+```bash
+: "${OPENJEV_BASE_URL:?missing OPENJEV_BASE_URL}"
+: "${OPENJEV_API_KEY:?missing OPENJEV_API_KEY}"
+
+OPENJEV_POLICY_TEMPLATE=containers/agents/opencode-advisory/advisory/intervention/openjev-policy.example.json
+export OPENJEV_INPUT_MODE=context
+
+case "$OPENJEV_INPUT_MODE" in
+  context|features_only|features_plus_context) ;;
+  *) echo "invalid OPENJEV_INPUT_MODE: $OPENJEV_INPUT_MODE" >&2; exit 2 ;;
+esac
+
+export OPENJEV_POLICY_FILE="${TMPDIR:-/tmp}/openjev-policy-${OPENJEV_INPUT_MODE}.json"
+jq --arg input_mode "$OPENJEV_INPUT_MODE" \
+  '.state.input_mode = $input_mode' \
+  "$OPENJEV_POLICY_TEMPLATE" > "$OPENJEV_POLICY_FILE"
+
+./target/release/eval-containers run swe-bench \
+  --task-id "$SWE_BENCH_TASK_ID" \
+  --agent opencode-advisory \
+  --model "$EXECUTOR_MODEL" \
+  --gateway-image litellm \
+  --advisor-model "$ADVISOR_MODEL" \
+  --advisor-base-url "$ADVISOR_BASE_URL" \
+  --advisor-context-mode full-session \
+  --advisor-invocation-policy openjev \
+  --openjev-base-url "$OPENJEV_BASE_URL" \
+  --advisor-openjev-policy-config-file "$OPENJEV_POLICY_FILE" \
+  --advisor-openjev-timeout-seconds 30 \
+  --advisor-openjev-interval 1 \
+  --advisor-max-calls unlimited \
+  --experiment-id openjev-neutral-v1 \
+  --agent-tag "$IMAGE_TAG" \
+  --local --timeout 1800
+```
+
+Set `OPENJEV_INPUT_MODE` before generating the policy file:
+
+| Value | State sent to OpenJEV |
+|---|---|
+| `context` | Compacted conversation context only. This is the backward-compatible default. |
+| `features_only` | Initial system/task prompts plus structured execution features, without conversation history. |
+| `features_plus_context` | The same prompts and features plus compacted conversation context. |
+
+The external OpenJEV hostname is never baked into the image or policy file.
+For local Compose, only the advisor sidecar receives the operator-provided URL
+and credential; the isolated runner uses the sidecar's internal proxy. For a
+different installation, set that installation's own `OPENJEV_BASE_URL` and
+`OPENJEV_API_KEY` without changing repository files.
+
+The policy file is merged over the built-in defaults. The most commonly changed
+fields are:
+
+| JSON field | Meaning |
+|---|---|
+| `request.model` | Model name sent to `/v1/systemone`. |
+| `request.question.instructions` | Instruction used to decide whether advice is worthwhile. |
+| `request.question.criteria` | Choice names and descriptions presented to OpenJEV. |
+| `state.frame` | Short description of the classification task. |
+| `state.input_mode` | `context`, `features_only`, or `features_plus_context`. Feature modes also preserve the initial system and task prompts as separate fields. |
+| `state.include_turn` | Include the current eligible turn number. |
+| `state.include_advisor_calls_used` | Include the number of selected advisor attempts. |
+| `state.include_advisor_calls_remaining` | Include the finite remaining budget, or mark it unlimited. |
+| `state.context.max_bytes` | Total serialized classifier-state limit. |
+| `state.context.max_string_characters` | Per-message character limit before total-state compaction. |
+| `state.context.preserve_initial_task` | Preserve the first two chronological messages—normally the initial system prompt and user task—when compacting. |
+| `state.context.preserve_recent_messages` | Retain as many recent messages as fit. |
+| `state.context.include_tool_results` | Include tool-result messages. Assistant tool-call declarations remain represented independently. |
+| `state.features.max_tool_result_characters` | Head-plus-tail limit for the latest matched tool result. The tool-call arguments remain exact. |
+| `state.features.max_latest_advice_characters` | Head-plus-tail limit for the latest successful advisor response. |
+| `decision.call_choice` / `continue_choice` | Map OpenJEV answer labels to platform actions. |
+
+The structured feature block reports tool-call distribution, executor calls
+since the latest advice, total advisor and executor model calls, the latest
+non-advisor tool call plus its matched result, and the latest successful advice.
+`features_plus_context` adds the existing initial-pair/recent-message compaction
+on top of the same feature block.
+
+When OpenJEV selects the advisor, the compact state it classified is also used
+as the advisor context. A selected advisor attempt consumes the budget even if
+the downstream advisor later times out or fails.
+
+### Fixed scheduling
+
+Fixed scheduling uses the same hidden platform-call protocol without a random
+draw or classifier. Provide exactly one schedule.
+
+One call at eligible executor turn 12:
+
+```bash
+./target/release/eval-containers run swe-bench \
+  --task-id "$SWE_BENCH_TASK_ID" \
+  --agent opencode-advisory \
+  --model "$EXECUTOR_MODEL" \
+  --gateway-image litellm \
+  --advisor-model "$ADVISOR_MODEL" \
+  --advisor-base-url "$ADVISOR_BASE_URL" \
+  --advisor-context-mode full-session \
+  --advisor-invocation-policy fixed \
+  --advisor-fixed-turn 12 \
+  --advisor-max-calls 1 \
+  --experiment-id fixed-turn-12 \
+  --agent-tag "$IMAGE_TAG" \
+  --local --timeout 1800
+```
+
+Calls at eligible turns 10, 20, 30, and so on, capped at three advisor calls:
+
+```bash
+./target/release/eval-containers run swe-bench \
+  --task-id "$SWE_BENCH_TASK_ID" \
+  --agent opencode-advisory \
+  --model "$EXECUTOR_MODEL" \
+  --gateway-image litellm \
+  --advisor-model "$ADVISOR_MODEL" \
+  --advisor-base-url "$ADVISOR_BASE_URL" \
+  --advisor-context-mode full-session \
+  --advisor-invocation-policy fixed \
+  --advisor-fixed-interval 10 \
+  --advisor-max-calls 3 \
+  --experiment-id fixed-every-10 \
+  --agent-tag "$IMAGE_TAG" \
+  --local --timeout 1800
+```
+
+Omit `--advisor-max-calls` or set it to `unlimited` for an uncapped recurring
+schedule. The router always inserts one executor turn after an advisor call,
+regardless of the selected fixed interval.
+
 ## 5. Experiment JSON
 
 The JSON names match the CLI concepts:
@@ -178,17 +396,20 @@ The JSON names match the CLI concepts:
   "agent": "opencode-advisory",
   "executor_model": "aws/claude-haiku-4-5",
   "gateway_image": "litellm",
+  "agent_tag": "platform-random-v1",
   "mode": "compose",
   "local": true,
-  "experiment_id": "named-configuration",
+  "experiment_id": "random-v1-repetition-1",
   "advisory_config_file": "experiments/advisory-config.example.json",
-  "executor_system_prompt_variant": "inspect-tools",
   "advisor": {
     "model": "aws/claude-opus-4-8",
     "system_prompt_variant": "strategic-default",
-    "tool_description_variant": "brief-reviewer",
     "context_mode": "full-session",
     "full_context_max_bytes": 0,
+    "invocation_policy": "random",
+    "random_probability": 0.25,
+    "max_calls": 3,
+    "random_seed": "random-v1-repetition-1",
     "log_payloads": true
   }
 }
@@ -196,13 +417,18 @@ The JSON names match the CLI concepts:
 
 Supported prompt fields are:
 
+- top-level `agent_tag` selects the immutable agent and combined eval images;
 - top level: `executor_system_prompt`, `executor_system_prompt_file`,
   `executor_system_prompt_variant`, `advisory_config`, and
   `advisory_config_file`;
 - under `advisor`: `system_prompt`, `system_prompt_file`,
   `system_prompt_variant`, `tool_description`, `tool_description_file`, and
   `tool_description_variant`, plus `context_mode` and
-  `full_context_max_bytes`.
+  `full_context_max_bytes`. Platform invocation additionally uses
+  `invocation_policy` and optional `max_calls`; random uses
+  `random_probability` and `random_seed`; OpenJev uses `openjev_base_url`,
+  `openjev_timeout_seconds`, `openjev_interval`, and its policy configuration;
+  fixed uses exactly one of `fixed_turn` or `fixed_interval`.
 
 `context_mode` defaults to `agent-provided`. In `full-session`, the advisor
 receives a compact model-visible OpenCode conversation, including exposed

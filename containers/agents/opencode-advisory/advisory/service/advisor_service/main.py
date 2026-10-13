@@ -3,7 +3,8 @@
 import logging
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from advisor_service import config
@@ -84,6 +85,42 @@ async def advisory(request: AdvisoryRequest) -> AdvisoryResponse:
         raise HTTPException(status_code=502, detail="Advisor service request failed") from exc
 
     return AdvisoryResponse(advice=advice)
+
+
+def _openjev_url(path: str) -> str:
+    base = config.OPENJEV_BASE_URL.rstrip("/")
+    suffix = path.lstrip("/")
+    if base.endswith("/v1") and suffix.startswith("v1/"):
+        suffix = suffix.removeprefix("v1/")
+    return f"{base}/{suffix}"
+
+
+@app.post("/openjev/{path:path}")
+async def openjev_proxy(path: str, request: Request) -> Response:
+    """Forward only OpenJEV classifier traffic through the egress-enabled sidecar."""
+    if not config.OPENJEV_BASE_URL or not config.OPENJEV_API_KEY:
+        raise HTTPException(status_code=503, detail="OpenJEV proxy configuration is incomplete")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            upstream = await client.post(
+                _openjev_url(path),
+                content=await request.body(),
+                headers={
+                    "authorization": f"Bearer {config.OPENJEV_API_KEY}",
+                    "content-type": request.headers.get("content-type", "application/json"),
+                },
+                timeout=config.OPENJEV_TIMEOUT_SECONDS,
+            )
+    except httpx.HTTPError as exc:
+        logger.error("OpenJEV proxy request failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="OpenJEV proxy request failed") from exc
+
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("content-type", "application/json"),
+    )
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 
-BENCHMARK="" AGENT="" MODEL="" TASK="0" DATASET="" PARALLELISM="" RETRY="" QUEUE=""
+BENCHMARK="" AGENT="" MODEL="" TASK="0" DATASET="" PARALLELISM="" RETRY="" QUEUE="" RUNNER_TAG="latest"
 EVAL_MODEL="" NAMESPACE="$NS_DEFAULT" REGISTRY="" PVC="eval-output-pvc" SWEEP_ID="" SUFFIX="" PER_TASK_OVERRIDE="" FLAT_IMAGES=""
 BUILD_MODE="oc" PLATFORM="linux/amd64"
 DATASET_MODE=false NO_BUILD=false NO_RUN=false REBUILD=false TEST=false RERUN=false WATCH=false DRY_RUN=false
@@ -17,6 +17,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --dataset) DATASET_MODE=true; shift;; --dataset-size) DATASET="$2"; DATASET_MODE=true; shift 2;;
   --parallelism) PARALLELISM="$2"; shift 2;; --retry) RETRY="$2"; shift 2;;
   --queue) QUEUE="$2"; shift 2;;
+  --runner-tag) RUNNER_TAG="$2"; shift 2;;
   --eval-model) EVAL_MODEL="$2"; shift 2;; --namespace) NAMESPACE="$2"; shift 2;;
   --registry) REGISTRY="$2"; shift 2;; --pvc) PVC="$2"; shift 2;;
   --repo-dir) REPO_DIR="$2"; shift 2;; --sweep-id) SWEEP_ID="$2"; shift 2;;
@@ -146,7 +147,7 @@ fi
 # chart's own default (false) instead — override with --flat-images false.
 SET=(--set "benchmark=$BENCHMARK" --set "agent=$AGENT" --set "task=$TASK"
      --set "model=$MODEL" --set "gatewayImage=$MODEL" --set "evalModel=$EVAL_MODEL"
-     --set "registry=$REGISTRY" --set "flatImages=$FLAT_IMAGES"
+     --set "registry=$REGISTRY" --set "flatImages=$FLAT_IMAGES" --set "runnerTag=$RUNNER_TAG"
      --set "outputVolume.persistentVolumeClaim.claimName=$PVC" --set "outputSubPath=$SUB")
 [[ -n "$SUFFIX"      ]] && SET+=(--set "imageSuffix=$SUFFIX" --set "nameSuffix=$SUFFIX")
 [[ -n "$DATASET"     ]] && SET+=(--set "datasetSize=$DATASET")

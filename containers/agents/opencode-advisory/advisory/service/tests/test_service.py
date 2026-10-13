@@ -6,6 +6,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 os.environ.setdefault("ADVISOR_MODEL", "test-advisor-model")
 
 from fastapi.testclient import TestClient
@@ -15,8 +17,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from advisor_service.advisor_runner import get_advice
 from advisor_service.config import DEFAULT_ADVISOR_SYSTEM_PROMPT, resolve_advisor_system_prompt
-from advisor_service.llm_client import _chat_completions_url
-from advisor_service.main import _SuppressHealthAccessLogs, app
+from advisor_service.llm_client import _chat_completions_url, _timeout_seconds
+from advisor_service.main import _SuppressHealthAccessLogs, _openjev_url, app
 from advisor_service.telemetry import _trace_endpoint
 
 
@@ -102,6 +104,47 @@ class AdvisorServiceTests(unittest.TestCase):
         self.assertEqual(response.json(), {"detail": "Advisor service request failed"})
         self.assertNotIn("secret", response.text)
 
+    def test_openjev_proxy_uses_sidecar_credentials_and_preserves_payload(self) -> None:
+        upstream = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"answers": {"advisor_decision": {"choice": "continue_executor"}}},
+            )
+        )
+        payload = {"model": "openjev", "state": {"turn": 3}, "questions": {}}
+        with (
+            patch("advisor_service.main.config.OPENJEV_BASE_URL", "https://openjev.test/v1"),
+            patch("advisor_service.main.config.OPENJEV_API_KEY", "real-secret"),
+            patch("advisor_service.main.httpx.AsyncClient.post", upstream),
+        ):
+            response = self.client.post(
+                "/openjev/v1/systemone",
+                json=payload,
+                headers={"authorization": "Bearer proxy"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"answers": {"advisor_decision": {"choice": "continue_executor"}}},
+        )
+        args, kwargs = upstream.await_args
+        self.assertEqual(args[0], "https://openjev.test/v1/systemone")
+        self.assertEqual(kwargs["headers"]["authorization"], "Bearer real-secret")
+        self.assertEqual(json.loads(kwargs["content"]), payload)
+
+    def test_openjev_proxy_rejects_missing_upstream_configuration(self) -> None:
+        with patch("advisor_service.main.config.OPENJEV_BASE_URL", ""):
+            response = self.client.post("/openjev/v1/systemone", json={})
+        self.assertEqual(response.status_code, 503)
+
+    def test_openjev_proxy_url_avoids_duplicate_v1(self) -> None:
+        with patch("advisor_service.main.config.OPENJEV_BASE_URL", "https://openjev.test/v1"):
+            self.assertEqual(
+                _openjev_url("v1/systemone"),
+                "https://openjev.test/v1/systemone",
+            )
+
     def test_base_url_normalization(self) -> None:
         self.assertEqual(
             _chat_completions_url("https://litellm.example.com/v1"),
@@ -111,6 +154,14 @@ class AdvisorServiceTests(unittest.TestCase):
             _chat_completions_url("https://litellm.example.com"),
             "https://litellm.example.com/v1/chat/completions",
         )
+
+    def test_advisor_timeout_uses_bounded_runtime_configuration(self) -> None:
+        with patch.dict(os.environ, {"EVAL_ADVISOR_TIMEOUT_SECONDS": "900"}):
+            self.assertEqual(_timeout_seconds(), 900.0)
+        for value in ("0", "86401", "invalid"):
+            with patch.dict(os.environ, {"EVAL_ADVISOR_TIMEOUT_SECONDS": value}):
+                with self.assertRaises(ValueError):
+                    _timeout_seconds()
 
     def test_trace_endpoint_normalization(self) -> None:
         self.assertEqual(
@@ -220,11 +271,85 @@ class AdvisorServiceTests(unittest.TestCase):
         ):
             self.assertIn(field, tool_source)
         self.assertIn("return requestAdvice(args.request, args.context)", tool_source)
-        self.assertIn("return requestAdvice(FULL_SESSION_REQUEST, context)", tool_source)
+        self.assertIn(
+            "const advice = await requestAdvice(FULL_SESSION_REQUEST, context)",
+            tool_source,
+        )
         self.assertIn("process.env.ADVISORY_EXPERIMENT_ID", tool_source)
         self.assertIn("process.env.EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT", tool_source)
         self.assertIn("process.env.EVAL_ADVISOR_TOOL_DESCRIPTION", tool_source)
         self.assertIn("process.env.EVAL_ADVISORY_CONFIG", tool_source)
+        self.assertIn("isAutomatedAdvisorCallID(toolContext.callID)", tool_source)
+        self.assertIn("readPlatformAdvisorContext(toolContext.callID)", tool_source)
+        self.assertIn("Missing platform advisor context", tool_source)
+        self.assertIn("platformAdvisorMessage(advice)", tool_source)
+
+    def test_platform_invocation_policies_are_wired_through_the_runner(self) -> None:
+        root = Path(__file__).resolve().parents[6]
+        dockerfile = (
+            root / "containers/agents/opencode-advisory/Dockerfile"
+        ).read_text(encoding="utf-8")
+        compose = (
+            root / "containers/agents/opencode-advisory/compose.yaml"
+        ).read_text(encoding="utf-8")
+        runner = (
+            root / "containers/core/runner/run-agent"
+        ).read_text(encoding="utf-8")
+        router = (
+            root
+            / "containers/agents/opencode-advisory/advisory/intervention/random-router.mjs"
+        ).read_text(encoding="utf-8")
+        openjev_policy = (
+            root
+            / "containers/agents/opencode-advisory/advisory/intervention/openjev-policy.mjs"
+        ).read_text(encoding="utf-8")
+        policy_config = (
+            root
+            / "containers/agents/opencode-advisory/advisory/intervention/policy-config.mjs"
+        ).read_text(encoding="utf-8")
+        tool_source = (
+            root
+            / "containers/agents/opencode-advisory/advisory/tools/advisory.ts"
+        ).read_text(encoding="utf-8")
+        client_source = (
+            root
+            / "containers/agents/opencode-advisory/advisory/service/advisor_service/llm_client.py"
+        ).read_text(encoding="utf-8")
+
+        for variable in (
+            "EVAL_ADVISOR_INVOCATION_POLICY",
+            "EVAL_ADVISOR_RANDOM_PROBABILITY",
+            "EVAL_ADVISOR_MAX_CALLS",
+            "EVAL_ADVISOR_RANDOM_SEED",
+        ):
+            self.assertIn(variable, compose)
+            self.assertIn(variable, runner)
+            self.assertTrue(variable in dockerfile or variable in router)
+        self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", compose)
+        self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", runner)
+        self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", tool_source)
+        self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", client_source)
+        self.assertIn("random-router.mjs", dockerfile)
+        self.assertIn("platform advisor invocation requires", dockerfile)
+        self.assertIn("openjev", dockerfile)
+        for variable in (
+            "OPENJEV_BASE_URL",
+            "OPENJEV_API_KEY",
+            "EVAL_ADVISOR_OPENJEV_TIMEOUT_SECONDS",
+            "EVAL_ADVISOR_OPENJEV_INTERVAL",
+            "EVAL_ADVISOR_OPENJEV_POLICY_CONFIG",
+        ):
+            self.assertIn(variable, compose)
+            self.assertIn(variable, runner)
+            self.assertIn(variable, router)
+        self.assertIn("OpenJevInterventionPolicy", router)
+        self.assertIn("parseAdvisorCallLimit", openjev_policy)
+        self.assertIn("'unlimited', or omitted", policy_config)
+        for variable in ("EVAL_ADVISOR_FIXED_TURN", "EVAL_ADVISOR_FIXED_INTERVAL"):
+            self.assertIn(variable, compose)
+            self.assertIn(variable, runner)
+            self.assertIn(variable, router)
+        self.assertIn("FixedInterventionPolicy", router)
 
     def test_executor_system_prompt_uses_opencode_instructions(self) -> None:
         dockerfile = (Path(__file__).resolve().parents[3] / "Dockerfile").read_text(
@@ -243,28 +368,16 @@ class AdvisorServiceTests(unittest.TestCase):
             '"instructions":["/home/agent/.config/opencode/executor-system-prompt.txt"]',
             dockerfile,
         )
-        self.assertIn(
-            'EVAL_EXECUTOR_SYSTEM_PROMPT="${EVAL_EXECUTOR_SYSTEM_PROMPT:-}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT="${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION="${EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION:-append}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_OPENCODE_BASE_SYSTEM_PROMPT="${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"',
-            runner,
-        )
-        self.assertIn(
-            'EVAL_MODEL_CONTEXT_LIMIT="${EVAL_MODEL_CONTEXT_LIMIT:-}"', runner
-        )
-        self.assertIn(
-            'EVAL_MODEL_OUTPUT_LIMIT="${EVAL_MODEL_OUTPUT_LIMIT:-}"', runner
-        )
+        self.assertIn('if [ "${EVAL_AGENT:-}" = "opencode-advisory" ]; then', runner)
+        for assignment in (
+            '"EVAL_EXECUTOR_SYSTEM_PROMPT=${EVAL_EXECUTOR_SYSTEM_PROMPT:-}"',
+            '"EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT=${EVAL_EXECUTOR_SYSTEM_PROMPT_VARIANT:-}"',
+            '"EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION=${EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION:-append}"',
+            '"EVAL_OPENCODE_BASE_SYSTEM_PROMPT=${EVAL_OPENCODE_BASE_SYSTEM_PROMPT:-}"',
+            '"EVAL_MODEL_CONTEXT_LIMIT=${EVAL_MODEL_CONTEXT_LIMIT:-}"',
+            '"EVAL_MODEL_OUTPUT_LIMIT=${EVAL_MODEL_OUTPUT_LIMIT:-}"',
+        ):
+            self.assertIn(assignment, runner)
         self.assertIn(
             'EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION must be append or prepend',
             dockerfile,
@@ -334,7 +447,7 @@ class AdvisorServiceTests(unittest.TestCase):
             dockerfile,
         )
 
-    def test_executor_and_advisor_credentials_are_configured_separately(self) -> None:
+    def test_executor_advisor_and_openjev_credentials_are_configured_separately(self) -> None:
         root = Path(__file__).resolve().parents[6]
         env_example = (root / ".env.example").read_text(encoding="utf-8")
         shared_compose = (
@@ -349,14 +462,24 @@ class AdvisorServiceTests(unittest.TestCase):
             "OPENAI_API_KEY",
             "ADVISOR_BASE_URL",
             "ADVISOR_API_KEY",
+            "OPENJEV_BASE_URL",
+            "OPENJEV_API_KEY",
         ):
             self.assertIn(f"{name}=", env_example)
         self.assertIn("OPENAI_API_BASE: ${OPENAI_API_BASE:?}", shared_compose)
         self.assertIn("OPENAI_API_KEY: ${OPENAI_API_KEY:?}", shared_compose)
         self.assertIn("ADVISOR_BASE_URL: ${ADVISOR_BASE_URL:-}", advisor_compose)
         self.assertIn("ADVISOR_API_KEY: ${ADVISOR_API_KEY:-none}", advisor_compose)
+        self.assertIn("OPENJEV_BASE_URL: ${OPENJEV_BASE_URL:-}", advisor_compose)
+        self.assertIn("OPENJEV_API_KEY: ${OPENJEV_API_KEY:-}", advisor_compose)
         self.assertNotIn("ADVISOR_BASE_URL=$OPENAI_API_BASE", env_example)
         self.assertNotIn("ADVISOR_API_KEY=$OPENAI_API_KEY", env_example)
+
+        run_guide = (
+            root / "containers" / "agents" / "opencode-advisory" / "README-RUNS.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn('--openjev-base-url "$OPENJEV_BASE_URL"', run_guide)
+        self.assertNotIn("openjev-svc.advisor-erel", run_guide)
 
     def test_advisor_system_prompt_supports_default_direct_and_named_sources(self) -> None:
         with patch.dict(

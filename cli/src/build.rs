@@ -240,12 +240,24 @@ pub fn execute(registry: &str, args: BuildArgs) -> Result<(), String> {
             no_pull,
         } => {
             let tag = std::env::var("TAG").unwrap_or_else(|_| "latest".to_string());
+            // The output release tag and the two input component tags are
+            // independent. This lets a new agent/eval release reuse an
+            // immutable benchmark image from an earlier release without
+            // moving either release's registry tag.
+            let benchmark_source_tag = std::env::var("EVAL_BENCHMARK_TAG")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| tag.clone());
+            let agent_source_tag = std::env::var("EVAL_AGENT_TAG")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| tag.clone());
             let bench_tag = if let Some(ref tid) = task_id {
-                benchmark_task_image(registry, &benchmark, tid, &tag)
+                benchmark_task_image(registry, &benchmark, tid, &benchmark_source_tag)
             } else {
-                benchmark_image(registry, &benchmark, &tag)
+                benchmark_image(registry, &benchmark, &benchmark_source_tag)
             };
-            let agent_tag = agent_image(registry, &agent, &tag);
+            let agent_tag = agent_image(registry, &agent, &agent_source_tag);
             // --no-pull on a base (non-task) build: use eval-local, which wires
             // bench+agent in-graph via named contexts. This avoids registry manifest
             // checks that fail on arm64 Mac (docker-container driver isolation means
@@ -393,6 +405,9 @@ fn bake_with_env(
     // reproducible without the CLI (src/RULES.md principle 2). HF_TOKEN is
     // shown as a variable reference, never its value.
     let mut shown = format!("REGISTRY={registry} ");
+    if let Ok(tag) = std::env::var("TAG") {
+        shown.push_str(&format!("TAG={tag} "));
+    }
     if std::env::var("HF_TOKEN").is_ok() {
         shown.push_str("HF_TOKEN=$HF_TOKEN ");
     }

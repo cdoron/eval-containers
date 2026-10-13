@@ -10,10 +10,12 @@
     "agent": {"type": "string"},
     "executor_model": {"type": "string"},
     "gateway_image": {"type": "string"},
+    "agent_tag": {"type": "string", "minLength": 1},
     "platform": {"type": "string"},
     "mode": {"enum": ["compose", "container", "job"]},
     "local": {"type": "boolean"},
     "timeout": {"type": "integer", "minimum": 1},
+    "executor_max_turns": {"type": "integer", "minimum": 0},
     "max_budget": {"type": "number", "minimum": 0},
     "agent_reasoning_effort": {"type": "string"},
     "experiment_id": {"type": "string"},
@@ -40,6 +42,28 @@
         "system_prompt_variant": {"type": "string", "minLength": 1},
         "context_mode": {"enum": ["agent-provided", "full-session"]},
         "full_context_max_bytes": {"type": "integer", "minimum": 0},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "invocation_policy": {"enum": ["self-initiated", "random", "openjev", "fixed"]},
+        "random_probability": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_calls": {
+          "oneOf": [
+            {"type": "integer", "minimum": 1},
+            {"const": "unlimited"}
+          ]
+        },
+        "random_seed": {"type": "string", "minLength": 1},
+        "openjev_base_url": {"type": "string", "minLength": 1},
+        "openjev_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "openjev_interval": {"type": "integer", "minimum": 1},
+        "openjev_policy_config": {
+          "oneOf": [
+            {"type": "object"},
+            {"type": "string", "minLength": 2}
+          ]
+        },
+        "openjev_policy_config_file": {"type": "string", "minLength": 1},
+        "fixed_turn": {"type": "integer", "minimum": 1},
+        "fixed_interval": {"type": "integer", "minimum": 1},
         "log_payloads": {"type": "boolean"}
       },
       "additionalProperties": false
