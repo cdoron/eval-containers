@@ -59,6 +59,11 @@ def validate(run: dict[str, Any]) -> None:
         "OpenJev policy configuration",
         ("openjev_policy_config", "openjev_policy_config_file"),
     )
+    validate_source(
+        advisor,
+        "sii-decision policy configuration",
+        ("sii_decision_policy_config", "sii_decision_policy_config_file"),
+    )
     catalog_document: dict[str, Any] | None = None
     for values, keys in (
         (run, ("executor_system_prompt_file", "advisory_config_file")),
@@ -68,6 +73,7 @@ def validate(run: dict[str, Any]) -> None:
                 "tool_description_file",
                 "system_prompt_file",
                 "openjev_policy_config_file",
+                "sii_decision_policy_config_file",
             ),
         ),
     ):
@@ -86,6 +92,8 @@ def validate(run: dict[str, Any]) -> None:
                     validate_catalog(catalog_document)
                 if key == "openjev_policy_config_file":
                     validate_openjev_policy_config(json.loads(text))
+                if key == "sii_decision_policy_config_file":
+                    validate_sii_decision_policy_config(json.loads(text))
     if run.get("advisory_config") is not None:
         catalog_document = run["advisory_config"]
         if isinstance(catalog_document, str):
@@ -136,7 +144,7 @@ def validate(run: dict[str, Any]) -> None:
         or executor_max_turns < 0
     ):
         fail("configuration executor_max_turns must be a non-negative integer")
-    for field in ("timeout_seconds", "openjev_timeout_seconds"):
+    for field in ("timeout_seconds", "openjev_timeout_seconds", "sii_decision_timeout_seconds"):
         value = advisor.get(field)
         if value is not None and (
             isinstance(value, bool)
@@ -145,10 +153,10 @@ def validate(run: dict[str, Any]) -> None:
         ):
             fail(f"configuration advisor.{field} must be an integer from 1 to 86400")
     invocation_policy = advisor.get("invocation_policy", "self-initiated")
-    if invocation_policy not in {"self-initiated", "random", "openjev", "fixed"}:
+    if invocation_policy not in {"self-initiated", "random", "openjev", "fixed", "sii-decision"}:
         fail(
             "configuration advisor.invocation_policy must be "
-            "self-initiated, random, openjev, or fixed"
+            "self-initiated, random, openjev, fixed, or sii-decision"
         )
     random_fields = (
         "random_probability",
@@ -162,11 +170,20 @@ def validate(run: dict[str, Any]) -> None:
         "openjev_policy_config_file",
     )
     fixed_fields = ("fixed_turn", "fixed_interval")
-    platform_fields = random_fields + openjev_fields + fixed_fields + ("max_calls",)
+    sii_decision_fields = (
+        "sii_decision_base_url",
+        "sii_decision_timeout_seconds",
+        "sii_decision_interval",
+        "sii_decision_policy_config",
+        "sii_decision_policy_config_file",
+    )
+    platform_fields = (
+        random_fields + openjev_fields + fixed_fields + sii_decision_fields + ("max_calls",)
+    )
     if invocation_policy == "self-initiated" and any(field in advisor for field in platform_fields):
         fail(
             "configuration platform advisor fields require invocation_policy "
-            "random, openjev, or fixed"
+            "random, openjev, fixed, or sii-decision"
         )
     if invocation_policy != "self-initiated":
         agent_tag = run.get("agent_tag")
@@ -203,8 +220,8 @@ def validate(run: dict[str, Any]) -> None:
                 "'unlimited', or omitted"
             )
     if invocation_policy == "random":
-        if any(field in advisor for field in openjev_fields + fixed_fields):
-            fail("configuration OpenJev/fixed fields do not apply to random policy")
+        if any(field in advisor for field in openjev_fields + fixed_fields + sii_decision_fields):
+            fail("configuration OpenJev/fixed/sii-decision fields do not apply to random policy")
         probability = advisor.get("random_probability")
         if (
             isinstance(probability, bool)
@@ -219,8 +236,8 @@ def validate(run: dict[str, Any]) -> None:
         if not isinstance(random_seed, str) or not random_seed.strip():
             fail("configuration advisor.random_seed must be non-empty text")
     if invocation_policy == "openjev":
-        if any(field in advisor for field in random_fields + fixed_fields):
-            fail("configuration random/fixed fields do not apply to OpenJev policy")
+        if any(field in advisor for field in random_fields + fixed_fields + sii_decision_fields):
+            fail("configuration random/fixed/sii-decision fields do not apply to OpenJev policy")
         interval = advisor.get("openjev_interval", 1)
         if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
             fail("configuration advisor.openjev_interval must be a positive integer")
@@ -230,14 +247,25 @@ def validate(run: dict[str, Any]) -> None:
                 config = json.loads(config)
             validate_openjev_policy_config(config)
     if invocation_policy == "fixed":
-        if any(field in advisor for field in random_fields + openjev_fields):
-            fail("configuration random/OpenJev fields do not apply to fixed policy")
+        if any(field in advisor for field in random_fields + openjev_fields + sii_decision_fields):
+            fail("configuration random/OpenJev/sii-decision fields do not apply to fixed policy")
         schedules = [field for field in fixed_fields if advisor.get(field) is not None]
         if len(schedules) != 1:
             fail("configuration fixed policy requires exactly one of fixed_turn or fixed_interval")
         value = advisor[schedules[0]]
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             fail(f"configuration advisor.{schedules[0]} must be a positive integer")
+    if invocation_policy == "sii-decision":
+        if any(field in advisor for field in random_fields + openjev_fields + fixed_fields):
+            fail("configuration random/OpenJev/fixed fields do not apply to sii-decision policy")
+        interval = advisor.get("sii_decision_interval", 1)
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
+            fail("configuration advisor.sii_decision_interval must be a positive integer")
+        config = advisor.get("sii_decision_policy_config")
+        if config is not None:
+            if isinstance(config, str):
+                config = json.loads(config)
+            validate_sii_decision_policy_config(config)
     if run.get("advisor") and run["agent"] != "opencode-advisory":
         fail("configuration has advisor settings but agent is not opencode-advisory")
     if run["agent"] == "opencode-advisory" and run.get("mode", "compose") != "compose":
@@ -258,7 +286,7 @@ def validate_source(
         )
     for key in selected:
         value = values[key]
-        if key in {"advisory_config", "openjev_policy_config"} and isinstance(value, dict):
+        if key in {"advisory_config", "openjev_policy_config", "sii_decision_policy_config"} and isinstance(value, dict):
             continue
         if not isinstance(value, str) or not value.strip():
             fail(f"configuration.{key} must be a non-empty string")
@@ -296,6 +324,14 @@ def validate_openjev_policy_config(config: Any) -> None:
     if not isinstance(config, dict) or config.get("schema_version") != 1:
         fail(
             "configuration OpenJev policy configuration must be a JSON object "
+            "with schema_version 1"
+        )
+
+
+def validate_sii_decision_policy_config(config: Any) -> None:
+    if not isinstance(config, dict) or config.get("schema_version") != 1:
+        fail(
+            "configuration sii-decision policy configuration must be a JSON object "
             "with schema_version 1"
         )
 
@@ -400,6 +436,26 @@ def run_command(cli: Path, run: dict[str, Any]) -> list[str]:
     )
     add(command, "--advisor-fixed-turn", advisor.get("fixed_turn"))
     add(command, "--advisor-fixed-interval", advisor.get("fixed_interval"))
+    add(command, "--sii-decision-base-url", advisor.get("sii_decision_base_url"))
+    add(
+        command,
+        "--advisor-sii-decision-timeout-seconds",
+        advisor.get("sii_decision_timeout_seconds"),
+    )
+    add(
+        command,
+        "--advisor-sii-decision-interval",
+        advisor.get("sii_decision_interval"),
+    )
+    sii_decision_config = advisor.get("sii_decision_policy_config")
+    if isinstance(sii_decision_config, dict):
+        sii_decision_config = json.dumps(sii_decision_config, separators=(",", ":"))
+    add(command, "--advisor-sii-decision-policy-config", sii_decision_config)
+    add(
+        command,
+        "--advisor-sii-decision-policy-config-file",
+        advisor.get("sii_decision_policy_config_file"),
+    )
     if "log_payloads" in advisor:
         command.append(f"--advisor-log-payloads={str(bool(advisor['log_payloads'])).lower()}")
     return command
