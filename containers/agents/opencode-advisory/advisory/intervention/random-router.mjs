@@ -12,6 +12,7 @@ import { FixedInterventionPolicy } from "./fixed-policy.mjs"
 import { OpenJevInterventionPolicy } from "./openjev-policy.mjs"
 import { parseAdvisorCallLimit } from "./policy-config.mjs"
 import { writePlatformAdvisorContext } from "./platform-context.mjs"
+import { SiiDecisionInterventionPolicy } from "./sii-decision-policy.mjs"
 
 const ADVISORY_TOOL_NAME = "advisory"
 
@@ -347,6 +348,12 @@ function envConfig() {
     openjevPolicyConfig: process.env.EVAL_ADVISOR_OPENJEV_POLICY_CONFIG || "",
     fixedTurn: process.env.EVAL_ADVISOR_FIXED_TURN || "",
     fixedInterval: process.env.EVAL_ADVISOR_FIXED_INTERVAL || "",
+    siiDecisionBaseURL: process.env.SII_DECISION_BASE_URL || "",
+    siiDecisionApiKey: process.env.SII_DECISION_API_KEY || "",
+    siiDecisionTimeoutSeconds: Number(process.env.EVAL_ADVISOR_SII_DECISION_TIMEOUT_SECONDS || "30"),
+    siiDecisionInterval: process.env.EVAL_ADVISOR_SII_DECISION_INTERVAL || "1",
+    siiDecisionPolicyConfig: process.env.EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG || "",
+    siiDecisionLogprobs: Number(process.env.SII_DECISION_LOGPROBS || "20"),
   }
 }
 
@@ -373,7 +380,19 @@ function createPolicy(config) {
       maxTurns: config.maxTurns,
     })
   }
-  throw new Error("EVAL_ADVISOR_INVOCATION_POLICY must be random, openjev, or fixed for the intervention router")
+  if (config.policyName === "sii-decision") {
+    return new SiiDecisionInterventionPolicy({
+      baseURL: config.siiDecisionBaseURL,
+      apiKey: config.siiDecisionApiKey,
+      timeoutSeconds: config.siiDecisionTimeoutSeconds,
+      interval: config.siiDecisionInterval,
+      maxCalls: config.maxCalls,
+      maxTurns: config.maxTurns,
+      policyConfig: config.siiDecisionPolicyConfig,
+      logprobsCount: config.siiDecisionLogprobs,
+    })
+  }
+  throw new Error("EVAL_ADVISOR_INVOCATION_POLICY must be random, openjev, fixed, or sii-decision for the intervention router")
 }
 
 export function startRouter(config = envConfig()) {
