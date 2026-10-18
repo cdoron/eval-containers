@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { buildClassifierState } from "./classifier-context.mjs"
+import { buildClassifierState, compactClassifierStateForRetry } from "./classifier-context.mjs"
 import {
   DEFAULT_OPENJEV_POLICY_CONFIG,
   OpenJevInterventionPolicy,
@@ -13,9 +13,10 @@ function executorRequest(messages = [{ role: "user", content: "Fix the failing p
   return { model: "executor", messages }
 }
 
-function response(choice = "continue_executor") {
+function response(choice = "continue_executor", inputTokens = 100) {
   return new Response(JSON.stringify({
     model: "openjev-FP8 test",
+    usage: { input_tokens: inputTokens, output_tokens: 0 },
     answers: {
       advisor_decision: {
         type: "choice",
@@ -34,9 +35,9 @@ test("uses the neutral concise advisor description as the default decision crite
   assert.equal(config.request.question.type, "choice")
 })
 
-test("accepts configurable framing, wording, labels, and context bounds", () => {
+test("accepts configurable framing, wording, labels, and token bounds", () => {
   const config = parseOpenJevPolicyConfig(JSON.stringify({
-    schema_version: 1,
+    schema_version: 2,
     request: {
       model: "custom-openjev",
       question_name: "consultation",
@@ -48,18 +49,51 @@ test("accepts configurable framing, wording, labels, and context bounds", () => 
     state: {
       input_mode: "features_only",
       frame: "Custom frame",
-      context: { max_bytes: 2048 },
-      features: { max_tool_result_characters: 256 },
+      context: { max_input_tokens: 2048 },
     },
     decision: { call_choice: "yes", continue_choice: "no" },
   }))
   assert.equal(config.request.model, "custom-openjev")
   assert.equal(config.state.frame, "Custom frame")
   assert.equal(config.state.input_mode, "features_only")
-  assert.equal(config.state.context.max_bytes, 2048)
-  assert.equal(config.state.features.max_tool_result_characters, 256)
+  assert.equal(config.state.context.max_input_tokens, 2048)
   assert.equal(config.decision.call_choice, "yes")
   assert.deepEqual(Object.keys(config.request.question.criteria), ["yes", "no"])
+})
+
+test("migrates schema-1 byte and character limits to the exact token default", () => {
+  const config = parseOpenJevPolicyConfig(JSON.stringify({
+    schema_version: 1,
+    state: {
+      context: { max_bytes: 80000, max_string_characters: 64000 },
+      features: {
+        max_tool_result_characters: 12000,
+        max_latest_advice_characters: 12000,
+      },
+    },
+  }))
+  assert.equal(config.schema_version, 2)
+  assert.equal(config.state.context.max_input_tokens, 32767)
+  assert.equal("max_bytes" in config.state.context, false)
+  assert.equal("max_string_characters" in config.state.context, false)
+  assert.deepEqual(config.state.features, {})
+})
+
+test("rejects removed byte and character fields in schema 2", () => {
+  assert.throws(
+    () => parseOpenJevPolicyConfig(JSON.stringify({
+      schema_version: 2,
+      state: { context: { max_bytes: 80000 } },
+    })),
+    /use state\.context\.max_input_tokens/,
+  )
+  assert.throws(
+    () => parseOpenJevPolicyConfig(JSON.stringify({
+      schema_version: 2,
+      state: { features: { max_tool_result_characters: 12000 } },
+    })),
+    /feature character limits were removed/,
+  )
 })
 
 test("supports omitted, explicit unlimited, or positive advisor-call limits", () => {
@@ -124,6 +158,8 @@ test("sends compact state and selects an advisor without exposing the token", as
   assert.equal(body.state.advisor_calls_remaining, 2)
   assert.deepEqual(body.state.messages, [{ role: "user", content: "Fix the failing parser test." }])
   assert.match(decision.classifier.sha256, /^[a-f0-9]{64}$/)
+  assert.equal(decision.classifier.input_tokens, 100)
+  assert.equal(decision.classifier.max_input_tokens, 32767)
 })
 
 test("unlimited mode keeps selecting with a mandatory executor turn after advice", async () => {
@@ -150,9 +186,24 @@ test("classifier errors fail open and do not consume an advisor call", async () 
   assert.equal(decision.selected, false)
   assert.equal(decision.reason, "openjev-error")
   assert.equal(decision.classifier.error, "OpenJevHTTPError")
-  assert.equal(decision.classifier.error_message, "OpenJev returned HTTP 401")
+  assert.equal(decision.classifier.error_message, "OpenJev returned HTTP 401: unauthorized")
   assert.equal(decision.classifier.http_status, 401)
   assert.equal(policy.calls, 0)
+})
+
+test("rejects a successful helper response without exact input-token usage", async () => {
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    fetchImpl: async () => new Response(JSON.stringify({
+      answers: { advisor_decision: { choice: "continue_executor" } },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  })
+  const decision = await policy.decide(executorRequest())
+  assert.equal(decision.selected, false)
+  assert.equal(decision.reason, "openjev-error")
+  assert.equal(decision.classifier.error, "OpenJevResponseError")
+  assert.match(decision.classifier.error_message, /usage\.input_tokens/)
 })
 
 test("classifier transport errors retain their message and nested cause", async () => {
@@ -175,13 +226,13 @@ test("classifier transport errors retain their message and nested cause", async 
   assert.equal(policy.calls, 0)
 })
 
-test("compact state preserves the initial system and task messages plus recent context", () => {
+test("classifier state preserves the complete initial prompt without byte or character truncation", () => {
   const stateConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG.state)
-  stateConfig.context.max_bytes = 1400
-  stateConfig.context.max_string_characters = 500
+  const fullTask = `Initial task ${"constraint ".repeat(2000)}`
   const messages = [
     { role: "system", content: "Initial system prompt" },
-    { role: "user", content: "Initial task" },
+    { role: "developer", content: "Bridge instructions" },
+    { role: "user", content: fullTask },
     ...Array.from({ length: 10 }, (_, index) => ({ role: "tool", content: `${index}: ${"x".repeat(400)}` })),
     { role: "assistant", content: "Most recent reasoning" },
   ]
@@ -192,26 +243,26 @@ test("compact state preserves the initial system and task messages plus recent c
     maxCalls: 3,
     stateConfig,
   })
-  assert.equal(result.metadata.truncated, true)
+  assert.equal(result.metadata.truncated, false)
   assert.equal(result.state.messages[0].content, "Initial system prompt")
-  assert.equal(result.state.messages[1].content, "Initial task")
+  assert.equal(result.state.messages[1].content, "Bridge instructions")
+  assert.equal(result.state.messages[2].content, fullTask)
   assert.equal(result.state.messages.at(-1).content, "Most recent reasoning")
-  assert.ok(result.metadata.bytes <= 1400)
+  assert.equal(result.metadata.protected_initial_messages, 3)
 })
 
-test("context-only truncation restores the cached task and bridge instructions", async () => {
+test("token-budget retry restores the cached task and bridge instructions", async () => {
   const requests = []
   const policyConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG)
   policyConfig.state.input_mode = "context"
-  policyConfig.state.context.max_bytes = 1800
-  policyConfig.state.context.max_string_characters = 1000
+  policyConfig.state.context.max_input_tokens = 1200
   const policy = new OpenJevInterventionPolicy({
     baseURL: "http://openjev.invalid:3000",
     apiKey: "token",
     policyConfig: JSON.stringify(policyConfig),
     fetchImpl: async (_url, options) => {
       requests.push(JSON.parse(options.body).state)
-      return response("continue_executor")
+      return response("continue_executor", requests.length === 2 ? 1800 : 900)
     },
   })
   const initialMessages = [
@@ -230,20 +281,84 @@ test("context-only truncation restores the cached task and bridge instructions",
     })),
     { role: "assistant", content: "Most recent executor reasoning" },
   ]
-  await policy.decide(executorRequest(laterMessages))
+  const decision = await policy.decide(executorRequest(laterMessages))
 
-  assert.equal(requests[1].context_truncated, true)
-  assert.deepEqual(requests[1].messages.slice(0, 3), initialMessages)
-  assert.equal(requests[1].messages.at(-1).content, "Most recent executor reasoning")
-  assert.ok(Buffer.byteLength(JSON.stringify(requests[1]), "utf8") <= 1800)
+  assert.equal(requests.length, 3)
+  assert.equal(requests[2].context_truncated, true)
+  assert.deepEqual(requests[2].messages.slice(0, 3), initialMessages)
+  assert.equal(requests[2].messages.at(-1).content, "Most recent executor reasoning")
+  assert.equal(decision.classifier.input_tokens, 900)
+  assert.equal(decision.classifier.previous_input_tokens, 900)
+  assert.equal(decision.classifier.compaction_attempts, 1)
+  assert.equal(decision.classifier.truncated, true)
 })
 
-test("feature-only state preserves prompts and exposes bounded execution features", () => {
+test("retries a helper-reported context overflow without removing protected messages", async () => {
+  const requests = []
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body).state)
+      if (requests.length === 1) {
+        return new Response(JSON.stringify({
+          error: { code: "context_length_exceeded", message: "maximum context length exceeded" },
+        }), { status: 413, headers: { "content-type": "application/json" } })
+      }
+      return response("continue_executor", 1000)
+    },
+  })
+  const messages = [
+    { role: "system", content: "System" },
+    { role: "user", content: "Task" },
+    { role: "assistant", content: "Old reasoning" },
+    { role: "tool", content: "Old result" },
+    { role: "assistant", content: "Recent reasoning" },
+  ]
+
+  const decision = await policy.decide(executorRequest(messages))
+
+  assert.equal(requests.length, 2)
+  assert.deepEqual(requests[1].messages.slice(0, 2), messages.slice(0, 2))
+  assert.equal(requests[1].messages.at(-1).content, "Recent reasoning")
+  assert.equal(decision.classifier.compaction_attempts, 1)
+})
+
+test("retry compaction keeps assistant tool calls paired with their results", () => {
+  const state = {
+    messages: [
+      { role: "system", content: "System" },
+      { role: "user", content: "Task" },
+      { role: "assistant", content: "Old reasoning" },
+      { role: "assistant", content: "Calling tool" },
+      { role: "tool", tool_call_id: "call-1", content: "Tool result" },
+      { role: "assistant", content: "Latest reasoning" },
+    ],
+  }
+  const compacted = compactClassifierStateForRetry(state, 2)
+  assert.deepEqual(compacted.messages.slice(0, 2), state.messages.slice(0, 2))
+  assert.equal(compacted.messages.at(-1).content, "Latest reasoning")
+  const toolResult = compacted.messages.findIndex((message) => message.role === "tool")
+  assert.equal(toolResult === -1 || compacted.messages[toolResult - 1].role === "assistant", true)
+})
+
+test("retry can remove the final unprotected history unit", () => {
+  const state = {
+    messages: [
+      { role: "system", content: "System" },
+      { role: "user", content: "Task" },
+      { role: "assistant", content: "Only recent unit" },
+    ],
+  }
+  const compacted = compactClassifierStateForRetry(state, 2)
+  assert.deepEqual(compacted.messages, state.messages.slice(0, 2))
+  assert.equal(compacted.context_truncated, true)
+})
+
+test("feature-only state preserves prompts and exposes complete execution features", () => {
   const stateConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG.state)
   stateConfig.input_mode = "features_only"
   stateConfig.include_advisor_calls_remaining = false
-  stateConfig.features.max_tool_result_characters = 160
-  stateConfig.features.max_latest_advice_characters = 160
   const exactArguments = JSON.stringify({ path: "src/parser.py", query: "a\\\"b" })
   const messages = [
     { role: "system", content: "Executor system instructions" },
@@ -291,19 +406,42 @@ test("feature-only state preserves prompts and exposes bounded execution feature
   assert.equal(result.state.features.model_calls_total, 2)
   assert.equal(result.state.features.latest_tool_call.name, "bash")
   assert.equal(result.state.features.latest_tool_call.arguments, exactArguments)
-  assert.equal(result.state.features.latest_tool_call.result_truncated, true)
+  assert.equal(result.state.features.latest_tool_call.result_omitted_after_token_overflow, false)
   assert.match(result.state.features.latest_tool_call.result, /^HEAD-/)
   assert.match(result.state.features.latest_tool_call.result, /-TAIL$/)
   assert.equal(result.state.features.latest_advice.content, "Inspect the parser state before editing.")
   assert.equal(result.metadata.input_mode, "features_only")
 })
 
-test("feature-plus-context state uses the existing recent-message compaction", () => {
+test("feature-only retry omits whole optional values only after a token overflow", () => {
+  const stateConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG.state)
+  stateConfig.input_mode = "features_only"
+  const result = buildClassifierState({
+    request: executorRequest([
+      { role: "system", content: "System" },
+      { role: "user", content: "Task" },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "call-1", type: "function", function: { name: "read", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "call-1", content: `HEAD-${"x".repeat(1000)}-TAIL` },
+    ]),
+    turn: 2,
+    calls: 0,
+    maxCalls: 3,
+    stateConfig,
+  })
+  assert.equal(result.state.features.latest_tool_call.result_omitted_after_token_overflow, false)
+
+  const compacted = compactClassifierStateForRetry(result.state, 0)
+  assert.equal(compacted.features.latest_tool_call.result_omitted_after_token_overflow, true)
+  assert.equal(compacted.features.latest_tool_call.result, null)
+})
+
+test("feature-plus-context state starts with complete context", () => {
   const stateConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG.state)
   stateConfig.input_mode = "features_plus_context"
   stateConfig.include_advisor_calls_remaining = false
-  stateConfig.context.max_bytes = 1800
-  stateConfig.context.max_string_characters = 500
   const messages = [
     { role: "system", content: "Executor system instructions" },
     { role: "user", content: "Initial task" },
@@ -322,8 +460,7 @@ test("feature-plus-context state uses the existing recent-message compaction", (
   assert.equal(result.state.task_prompt, "Initial task")
   assert.equal(result.state.messages.at(-1).content, "Most recent reasoning")
   assert.equal(result.metadata.input_mode, "features_plus_context")
-  assert.equal(result.metadata.truncated, true)
-  assert.ok(result.metadata.bytes <= 1800)
+  assert.equal(result.metadata.truncated, false)
 })
 
 test("turns since advisor counts a failed initiated call even without advice", () => {

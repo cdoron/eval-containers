@@ -318,20 +318,29 @@ fields are:
 | `state.include_turn` | Include the current eligible turn number. |
 | `state.include_advisor_calls_used` | Include the number of selected advisor attempts. |
 | `state.include_advisor_calls_remaining` | Include the finite remaining budget, or mark it unlimited. |
-| `state.context.max_bytes` | Total serialized classifier-state limit. |
-| `state.context.max_string_characters` | Per-message character limit before total-state compaction. |
+| `state.context.max_input_tokens` | Exact OpenJEV prompt-token limit, measured after the helper applies its final prompt template. |
 | `state.context.preserve_initial_task` | Cache the complete initial prompt block before the first executor action—including system/developer bridge instructions and the user task—and preserve it when compacting later requests. |
-| `state.context.preserve_recent_messages` | Retain as many recent messages as fit. |
+| `state.context.preserve_recent_messages` | On a token-overflow retry, drop old complete history units before recent ones. |
 | `state.context.include_tool_results` | Include tool-result messages. Assistant tool-call declarations remain represented independently. |
-| `state.features.max_tool_result_characters` | Head-plus-tail limit for the latest matched tool result. The tool-call arguments remain exact. |
-| `state.features.max_latest_advice_characters` | Head-plus-tail limit for the latest successful advisor response. |
 | `decision.call_choice` / `continue_choice` | Map OpenJEV answer labels to platform actions. |
 
 The structured feature block reports tool-call distribution, executor calls
 since the latest advice, total advisor and executor model calls, the latest
 non-advisor tool call plus its matched result, and the latest successful advice.
-`features_plus_context` adds the existing initial-pair/recent-message compaction
+`features_plus_context` adds the protected initial prompt and executor history
 on top of the same feature block.
+
+The OpenJEV helper returns its exact tokenizer count as `usage.input_tokens`.
+The router logs it and retries context overflows by removing older history
+units, while keeping the complete cached initial prompt and keeping assistant
+tool calls adjacent to their tool results. OpenJEV context selection does not
+use serialized bytes. Derived feature values start complete; optional
+latest-advice/result fields are omitted whole only after exact token feedback
+reports that more reduction is required.
+New policies use schema 2. Schema-1 policies are accepted for compatibility;
+their byte/character limits are discarded and replaced by the exact 32,767
+token default. Prefer migrating them explicitly to
+`state.context.max_input_tokens`.
 
 OpenJEV's state is classifier-only. When OpenJEV selects the advisor, the
 advisor independently receives the same standard full-session context used by
@@ -437,9 +446,10 @@ Supported prompt fields are:
 receives a compact model-visible OpenCode conversation, including exposed
 reasoning and tool calls/results but excluding executor tool definitions and
 internal session bookkeeping. Completed OpenCode compaction boundaries are
-honored. The active advisory call is removed; earlier advice remains without
-its duplicated old inputs. A nonzero `full_context_max_bytes` fails clearly
-when exceeded and never truncates.
+honored without dropping the original user task, which is restored before the
+compacted history. The active advisory call is removed; earlier advice remains
+without its duplicated old inputs. A nonzero `full_context_max_bytes` fails
+clearly when exceeded and never truncates.
 
 Each JSON file describes exactly one experiment. Use a separate file for each
 configuration; there is no run array or run index. Secrets remain in the shell,
