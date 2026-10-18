@@ -126,9 +126,12 @@ Its main controls are:
 
 OpenJEV reports the exact input-token count produced by its own tokenizer. The
 router records that count and, when it exceeds `max_input_tokens` or the helper
-reports a context overflow, retries with fewer old history units. Initial
-system/developer/task messages remain protected, recent history remains in
-order, and adjacent assistant tool calls and tool results are removed together.
+reports a context overflow, retries after removing the smaller of five or half
+of the remaining old history units. Initial system/developer/task messages
+remain protected, recent history remains in order, and adjacent assistant tool
+calls and tool results are removed together. The final recent history unit is
+never removed; if it still cannot fit, OpenJEV fails open and the executor
+continues normally.
 No byte count is used to select or truncate OpenJEV context.
 Derived feature values also start complete. If exact token feedback requires
 further reduction, optional latest-advice/result fields are omitted whole on

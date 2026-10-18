@@ -332,9 +332,11 @@ on top of the same feature block.
 
 The OpenJEV helper returns its exact tokenizer count as `usage.input_tokens`.
 The router logs it and retries context overflows by removing older history
-units, while keeping the complete cached initial prompt and keeping assistant
-tool calls adjacent to their tool results. OpenJEV context selection does not
-use serialized bytes. Derived feature values start complete; optional
+units—at most five per retry and never the final recent unit—while keeping the
+complete cached initial prompt and keeping assistant tool calls adjacent to
+their tool results. If the final unit still cannot fit, OpenJEV fails open and
+the executor continues normally. OpenJEV context selection does not use
+serialized bytes. Derived feature values start complete; optional
 latest-advice/result fields are omitted whole only after exact token feedback
 reports that more reduction is required.
 New policies use schema 2. Schema-1 policies are accepted for compatibility;

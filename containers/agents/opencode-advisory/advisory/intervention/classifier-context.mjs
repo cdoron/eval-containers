@@ -240,16 +240,10 @@ export function compactClassifierStateForRetry(state, protectedInitialCount, pre
   if (units.length <= 1) {
     const compactedFeatures = omitRetryableFeature(state)
     if (compactedFeatures) return compactedFeatures
-    if (units.length === 0) return null
-    return {
-      ...state,
-      messages: protectedMessages,
-      context_truncated: true,
-      original_message_count: state.original_message_count ?? state.messages.length,
-    }
+    return null
   }
 
-  const removeCount = Math.max(1, Math.floor(units.length / 2))
+  const removeCount = Math.max(1, Math.min(5, Math.floor(units.length / 2)))
   const retained = units.slice(removeCount).flat()
   return {
     ...state,
