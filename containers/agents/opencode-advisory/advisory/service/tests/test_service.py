@@ -280,8 +280,11 @@ class AdvisorServiceTests(unittest.TestCase):
         self.assertIn("process.env.EVAL_ADVISOR_TOOL_DESCRIPTION", tool_source)
         self.assertIn("process.env.EVAL_ADVISORY_CONFIG", tool_source)
         self.assertIn("isAutomatedAdvisorCallID(toolContext.callID)", tool_source)
-        self.assertIn("readPlatformAdvisorContext(toolContext.callID)", tool_source)
-        self.assertIn("Missing platform advisor context", tool_source)
+        self.assertIn(
+            "const context = await standardSessionContext(toolContext)", tool_source
+        )
+        self.assertNotIn("readPlatformAdvisorContext", tool_source)
+        self.assertNotIn("Missing platform advisor context", tool_source)
         self.assertIn("platformAdvisorMessage(advice)", tool_source)
 
     def test_platform_invocation_policies_are_wired_through_the_runner(self) -> None:

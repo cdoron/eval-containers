@@ -1,7 +1,7 @@
 "use strict"
 
 import crypto from "node:crypto"
-import { buildClassifierState } from "./classifier-context.mjs"
+import { buildClassifierState, captureInitialPromptMessages } from "./classifier-context.mjs"
 import { parseAdvisorCallLimit, parseOptionalPositiveInteger } from "./policy-config.mjs"
 
 export { parseAdvisorCallLimit } from "./policy-config.mjs"
@@ -203,7 +203,7 @@ export class OpenJevInterventionPolicy {
     this.eligibleTurns = 0
     this.calls = 0
     this.forceExecutorNext = false
-    this.pendingAdvisorContext = null
+    this.initialPromptMessages = null
   }
 
   readyMetadata() {
@@ -216,13 +216,10 @@ export class OpenJevInterventionPolicy {
     }
   }
 
-  takeAdvisorContext() {
-    const context = this.pendingAdvisorContext
-    this.pendingAdvisorContext = null
-    return context
-  }
-
   async decide(request) {
+    if (this.initialPromptMessages === null) {
+      this.initialPromptMessages = captureInitialPromptMessages(request?.messages)
+    }
     this.eligibleTurns += 1
     const turn = this.eligibleTurns
     if (this.maxTurns > 0 && turn > this.maxTurns) {
@@ -248,6 +245,7 @@ export class OpenJevInterventionPolicy {
         calls: this.calls,
         maxCalls: this.maxCalls,
         stateConfig: this.config.state,
+        initialPromptMessages: this.initialPromptMessages,
       })
       const response = await this.fetchImpl(this.url, {
         method: "POST",
@@ -280,7 +278,6 @@ export class OpenJevInterventionPolicy {
       }
       const selected = choice === this.config.decision.call_choice
       if (selected) {
-        this.pendingAdvisorContext = JSON.stringify(context.state)
         this.calls += 1
         this.forceExecutorNext = true
       }

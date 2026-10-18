@@ -320,7 +320,7 @@ fields are:
 | `state.include_advisor_calls_remaining` | Include the finite remaining budget, or mark it unlimited. |
 | `state.context.max_bytes` | Total serialized classifier-state limit. |
 | `state.context.max_string_characters` | Per-message character limit before total-state compaction. |
-| `state.context.preserve_initial_task` | Preserve the first two chronological messages—normally the initial system prompt and user task—when compacting. |
+| `state.context.preserve_initial_task` | Cache the complete initial prompt block before the first executor action—including system/developer bridge instructions and the user task—and preserve it when compacting later requests. |
 | `state.context.preserve_recent_messages` | Retain as many recent messages as fit. |
 | `state.context.include_tool_results` | Include tool-result messages. Assistant tool-call declarations remain represented independently. |
 | `state.features.max_tool_result_characters` | Head-plus-tail limit for the latest matched tool result. The tool-call arguments remain exact. |
@@ -333,9 +333,12 @@ non-advisor tool call plus its matched result, and the latest successful advice.
 `features_plus_context` adds the existing initial-pair/recent-message compaction
 on top of the same feature block.
 
-When OpenJEV selects the advisor, the compact state it classified is also used
-as the advisor context. A selected advisor attempt consumes the budget even if
-the downstream advisor later times out or fails.
+OpenJEV's state is classifier-only. When OpenJEV selects the advisor, the
+advisor independently receives the same standard full-session context used by
+self-initiated, random, and fixed platform calls. Changing `state.input_mode`
+therefore changes only OpenJEV's decision input; it never changes the context
+sent to the advisor. A selected advisor attempt consumes the budget even if the
+downstream advisor later times out or fails.
 
 ### Fixed scheduling
 
