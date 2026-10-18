@@ -10,8 +10,6 @@ import {
   isAutomatedAdvisorCallID,
   platformAdvisorMessage,
 } from "/opt/agent/advisory/intervention/protocol.mjs"
-// @ts-ignore This absolute path is populated by the agent image.
-import { readPlatformAdvisorContext } from "/opt/agent/advisory/intervention/platform-context.mjs"
 
 const DESCRIPTIONS_FILE = "/opt/agent/advisory/tool-descriptions.json"
 const EXECUTOR_PROMPT_FILE = "/home/agent/.config/opencode/executor-system-prompt.txt"
@@ -145,6 +143,25 @@ async function requestAdvice(request: string, context: string): Promise<string> 
   return parsed.advice.trim()
 }
 
+type AdvisoryToolContext = {
+  sessionID: string
+  directory: string
+  messageID: string
+  callID: string
+}
+
+async function standardSessionContext(toolContext: AdvisoryToolContext): Promise<string> {
+  const session = await exportSession(toolContext.sessionID, toolContext.directory)
+  const executorSystemPrompt = fs.existsSync(EXECUTOR_PROMPT_FILE)
+    ? fs.readFileSync(EXECUTOR_PROMPT_FILE, "utf8")
+    : (process.env.EVAL_EXECUTOR_SYSTEM_PROMPT || "")
+  return serializeSessionContext({
+    session,
+    currentMessageID: toolContext.messageID,
+    executorSystemPrompt,
+  }, fullContextMaxBytes())
+}
+
 const mode = contextMode()
 
 // Native opencode tool — opencode itself executes this, independent of
@@ -155,21 +172,7 @@ export default mode === "full-session"
       args: {},
       async execute(_args, toolContext) {
         const automated = isAutomatedAdvisorCallID(toolContext.callID)
-        let context = automated ? readPlatformAdvisorContext(toolContext.callID) : null
-        if (automated && context === null) {
-          throw new Error(`Missing platform advisor context for ${toolContext.callID}`)
-        }
-        if (!automated) {
-          const session = await exportSession(toolContext.sessionID, toolContext.directory)
-          const executorSystemPrompt = fs.existsSync(EXECUTOR_PROMPT_FILE)
-            ? fs.readFileSync(EXECUTOR_PROMPT_FILE, "utf8")
-            : (process.env.EVAL_EXECUTOR_SYSTEM_PROMPT || "")
-          context = serializeSessionContext({
-            session,
-            currentMessageID: toolContext.messageID,
-            executorSystemPrompt,
-          }, fullContextMaxBytes())
-        }
+        const context = await standardSessionContext(toolContext)
         const advice = await requestAdvice(FULL_SESSION_REQUEST, context)
         return automated
           ? platformAdvisorMessage(advice)

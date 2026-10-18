@@ -87,7 +87,7 @@ test("queries OpenJev only on the configured eligible-turn interval", async () =
   assert.equal(requests, 1)
 })
 
-test("retains the exact OpenJev state for the selected advisor call", async () => {
+test("keeps the OpenJev classifier state separate from the selected advisor call", async () => {
   let classifierState
   const policy = new OpenJevInterventionPolicy({
     baseURL: "http://openjev.invalid:3000",
@@ -98,8 +98,8 @@ test("retains the exact OpenJev state for the selected advisor call", async () =
     },
   })
   assert.equal((await policy.decide(executorRequest())).selected, true)
-  assert.deepEqual(JSON.parse(policy.takeAdvisorContext()), classifierState)
-  assert.equal(policy.takeAdvisorContext(), null)
+  assert.ok(classifierState)
+  assert.equal("takeAdvisorContext" in policy, false)
 })
 
 test("sends compact state and selects an advisor without exposing the token", async () => {
@@ -197,6 +197,45 @@ test("compact state preserves the initial system and task messages plus recent c
   assert.equal(result.state.messages[1].content, "Initial task")
   assert.equal(result.state.messages.at(-1).content, "Most recent reasoning")
   assert.ok(result.metadata.bytes <= 1400)
+})
+
+test("context-only truncation restores the cached task and bridge instructions", async () => {
+  const requests = []
+  const policyConfig = structuredClone(DEFAULT_OPENJEV_POLICY_CONFIG)
+  policyConfig.state.input_mode = "context"
+  policyConfig.state.context.max_bytes = 1800
+  policyConfig.state.context.max_string_characters = 1000
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    policyConfig: JSON.stringify(policyConfig),
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body).state)
+      return response("continue_executor")
+    },
+  })
+  const initialMessages = [
+    { role: "system", content: "Generic executor system prompt" },
+    { role: "developer", content: "Bridge instructions that must remain available" },
+    { role: "user", content: "Original task that must remain available" },
+  ]
+  await policy.decide(executorRequest(initialMessages))
+
+  const laterMessages = [
+    { role: "system", content: "Generic executor system prompt" },
+    { role: "system", content: platformAdvisorMessage("Prior advice") },
+    ...Array.from({ length: 12 }, (_, index) => ({
+      role: "tool",
+      content: `${index}: ${"x".repeat(500)}`,
+    })),
+    { role: "assistant", content: "Most recent executor reasoning" },
+  ]
+  await policy.decide(executorRequest(laterMessages))
+
+  assert.equal(requests[1].context_truncated, true)
+  assert.deepEqual(requests[1].messages.slice(0, 3), initialMessages)
+  assert.equal(requests[1].messages.at(-1).content, "Most recent executor reasoning")
+  assert.ok(Buffer.byteLength(JSON.stringify(requests[1]), "utf8") <= 1800)
 })
 
 test("feature-only state preserves prompts and exposes bounded execution features", () => {

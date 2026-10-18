@@ -30,8 +30,7 @@ RUN node --test \
       /opt/agent/advisory/context/session-context.test.mjs \
       /opt/agent/advisory/intervention/random-router.test.mjs \
       /opt/agent/advisory/intervention/openjev-policy.test.mjs \
-      /opt/agent/advisory/intervention/fixed-policy.test.mjs \
-      /opt/agent/advisory/intervention/platform-context.test.mjs
+      /opt/agent/advisory/intervention/fixed-policy.test.mjs
 RUN chmod +x /opt/agent/advisory/service/start.sh
 
 RUN cat > /opt/agent/install.sh <<'I' && chmod +x /opt/agent/install.sh && echo "${AGENT_VERSION}" > /opt/agent/VERSION

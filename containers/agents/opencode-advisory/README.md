@@ -98,10 +98,11 @@ In local Compose, the isolated runner sends classifier requests to a narrow
 proxy on the advisor sidecar; that sidecar alone joins the upstream network and
 uses `OPENJEV_BASE_URL` and `OPENJEV_API_KEY`. Cluster deployments continue to
 use their configured cluster-reachable OpenJEV URL directly.
-When OpenJEV selects the advisor, the exact compact state that OpenJEV evaluated
-is passed to the advisor, so the classifier and advisor reason over the same
-snapshot. The selected advisor attempt consumes the budget even if the advisor
-itself subsequently fails.
+The compact state evaluated by OpenJEV is used only for the routing decision.
+When OpenJEV selects the advisor, the advisor independently receives the
+standard full-session context used by the other invocation policies. The
+selected advisor attempt consumes the budget even if the advisor itself
+subsequently fails.
 
 `EVAL_ADVISOR_OPENJEV_POLICY_CONFIG` is schema-versioned JSON. The default and
 a complete editable example are in
@@ -119,7 +120,7 @@ Its main controls are:
 | `state.include_*` | Whether turn and advisor-budget counters are included. |
 | `state.context.max_bytes` | Maximum serialized classifier-state size. |
 | `state.context.max_string_characters` | Per-message character bound before total-state compaction. |
-| `state.context.preserve_initial_task` | Retain the first two chronological messages (normally the initial system prompt and user task) when total-state compaction is needed. |
+| `state.context.preserve_initial_task` | Cache the complete initial prompt block before the first executor action (system/developer bridge instructions and user task) and retain it whenever total-state compaction is needed. |
 | `state.context.preserve_recent_messages` | Fill the remaining budget with recent messages. |
 | `state.context.include_tool_results` | Include or exclude messages whose role is `tool`. Tool-call declarations on assistant messages remain represented. |
 | `state.features.max_tool_result_characters` | Head-plus-tail character bound for the latest matched tool result; tool arguments are not shortened. |
@@ -251,6 +252,12 @@ advisory responses stay in place, but their old request/context inputs are
 removed so the complete session is not recursively duplicated. OpenCode does
 not expose its built-in base system prompt to custom tools, so only the
 configured executor addition can be included.
+
+In `full-session` mode this serialization path is identical for every advisor
+invocation policy: self-initiated, random, fixed, and OpenJEV. OpenJEV builds a
+separate classifier state according to `state.input_mode`; that state is used
+only to decide whether to call the advisor and is never forwarded as the
+advisor's context.
 
 `--advisor-full-context-max-bytes <n>` sets a serialized byte limit. A value of
 `0` means unlimited. Exceeding a nonzero limit fails the tool call explicitly;

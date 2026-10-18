@@ -71,16 +71,39 @@ function contextMetadata(state, details) {
   }
 }
 
-function shortenLongestMessage(state, maxBytes) {
+function shortenLongestMessage(state, maxBytes, protectedInitialCount) {
   while (serializedBytes(state) > maxBytes) {
     const candidates = state.messages
       .map((message, index) => ({ index, length: message.content.length }))
-      .filter(({ length }) => length > 64)
+      .filter(({ index, length }) => index >= protectedInitialCount && length > 64)
       .sort((a, b) => b.length - a.length)
     if (candidates.length === 0) break
     const message = state.messages[candidates[0].index]
     message.content = `${message.content.slice(0, Math.max(64, Math.floor(message.content.length / 2)))}\n[message truncated]`
   }
+}
+
+export function captureInitialPromptMessages(messages) {
+  if (!Array.isArray(messages)) return []
+  const initial = []
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue
+    if (message.role === "assistant" || message.role === "tool") break
+    if (message.role === "system" || message.role === "developer" || message.role === "user") {
+      initial.push(message)
+    }
+  }
+  return initial
+}
+
+function prependProtectedInitialMessages(messages, protectedInitialMessages) {
+  const remaining = [...messages]
+  for (const protectedMessage of protectedInitialMessages) {
+    const signature = JSON.stringify(protectedMessage)
+    const index = remaining.findIndex((message) => JSON.stringify(message) === signature)
+    if (index >= 0) remaining.splice(index, 1)
+  }
+  return [...protectedInitialMessages, ...remaining]
 }
 
 function realToolCalls(message) {
@@ -202,28 +225,32 @@ function addConfiguredFields(state, { turn, calls, maxCalls, stateConfig }) {
   }
 }
 
-function addCompactedMessages(state, messages, contextConfig) {
+function addCompactedMessages(state, messages, contextConfig, protectedInitialMessages) {
   const originalMessageCount = messages.length
-  state.messages = messages
+  const protectedInitialCount = contextConfig.preserve_initial_task
+    ? protectedInitialMessages.length
+    : 0
+  state.messages = contextConfig.preserve_initial_task
+    ? prependProtectedInitialMessages(messages, protectedInitialMessages)
+    : messages
   if (serializedBytes(state) <= contextConfig.max_bytes) {
-    return { truncated: false, originalMessageCount }
+    return { truncated: false, originalMessageCount, protectedInitialCount }
   }
 
-  const selected = []
-  const preservedInitialCount = contextConfig.preserve_initial_task ? Math.min(2, messages.length) : 0
-  if (preservedInitialCount > 0) selected.push(...messages.slice(0, preservedInitialCount))
-  const firstRecentIndex = preservedInitialCount
+  const allMessages = state.messages
+  const selected = allMessages.slice(0, protectedInitialCount)
+  const firstRecentIndex = protectedInitialCount
   if (contextConfig.preserve_recent_messages) {
     let includedRecent = 0
-    for (let index = messages.length - 1; index >= firstRecentIndex; index -= 1) {
+    for (let index = allMessages.length - 1; index >= firstRecentIndex; index -= 1) {
       const candidate = [
-        ...messages.slice(0, preservedInitialCount),
-        messages[index],
-        ...selected.slice(preservedInitialCount),
+        ...allMessages.slice(0, protectedInitialCount),
+        allMessages[index],
+        ...selected.slice(protectedInitialCount),
       ]
       const candidateState = { ...state, messages: candidate }
       if (serializedBytes(candidateState) <= contextConfig.max_bytes || includedRecent === 0) {
-        selected.splice(preservedInitialCount, 0, messages[index])
+        selected.splice(protectedInitialCount, 0, allMessages[index])
         includedRecent += 1
       }
     }
@@ -231,13 +258,18 @@ function addCompactedMessages(state, messages, contextConfig) {
   state.messages = selected
   state.context_truncated = true
   state.original_message_count = originalMessageCount
-  shortenLongestMessage(state, contextConfig.max_bytes)
-  return { truncated: true, originalMessageCount }
+  shortenLongestMessage(state, contextConfig.max_bytes, protectedInitialCount)
+  return { truncated: true, originalMessageCount, protectedInitialCount }
 }
 
-export function buildClassifierState({ request, turn, calls, maxCalls, stateConfig }) {
+export function buildClassifierState({ request, turn, calls, maxCalls, stateConfig, initialPromptMessages }) {
   const contextConfig = stateConfig.context
   const originalMessages = Array.isArray(request.messages) ? request.messages : []
+  const initialMessages = Array.isArray(initialPromptMessages) && initialPromptMessages.length > 0
+    ? initialPromptMessages
+    : captureInitialPromptMessages(originalMessages)
+  const protectedInitialMessages = initialMessages
+    .map((message) => compactMessage(message, contextConfig.max_string_characters))
   const rewritten = rewriteAutomatedAdvisorMessages(originalMessages)
   const messages = (Array.isArray(rewritten) ? rewritten : [])
     .filter((message) => contextConfig.include_tool_results || message?.role !== "tool")
@@ -247,14 +279,19 @@ export function buildClassifierState({ request, turn, calls, maxCalls, stateConf
   addConfiguredFields(state, { turn, calls, maxCalls, stateConfig })
 
   if (stateConfig.input_mode !== "context") {
-    state.initial_system_prompt = initialPrompt(originalMessages, "system")
-    state.task_prompt = initialPrompt(originalMessages, "user")
+    state.initial_system_prompt = initialPrompt(initialMessages, "system")
+    state.task_prompt = initialPrompt(initialMessages, "user")
     state.features = classifierFeatures(originalMessages, calls, stateConfig.features)
   }
 
-  let contextDetails = { truncated: false, originalMessageCount: 0 }
+  let contextDetails = { truncated: false, originalMessageCount: 0, protectedInitialCount: 0 }
   if (stateConfig.input_mode !== "features_only") {
-    contextDetails = addCompactedMessages(state, messages, contextConfig)
+    contextDetails = addCompactedMessages(
+      state,
+      messages,
+      contextConfig,
+      protectedInitialMessages,
+    )
   }
 
   if (serializedBytes(state) > contextConfig.max_bytes) {
@@ -268,6 +305,7 @@ export function buildClassifierState({ request, turn, calls, maxCalls, stateConf
       truncated: contextDetails.truncated,
       original_messages: contextDetails.originalMessageCount,
       included_messages: includedMessages,
+      protected_initial_messages: contextDetails.protectedInitialCount,
     }),
   }
 }

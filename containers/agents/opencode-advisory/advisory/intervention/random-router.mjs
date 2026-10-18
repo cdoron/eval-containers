@@ -11,7 +11,6 @@ import {
 import { FixedInterventionPolicy } from "./fixed-policy.mjs"
 import { OpenJevInterventionPolicy } from "./openjev-policy.mjs"
 import { parseAdvisorCallLimit } from "./policy-config.mjs"
-import { writePlatformAdvisorContext } from "./platform-context.mjs"
 
 const ADVISORY_TOOL_NAME = "advisory"
 
@@ -291,12 +290,6 @@ export function createRouter({ upstreamBaseURL, policy }) {
             return
           }
           if (decision.selected) {
-            const advisorContext = typeof policy.takeAdvisorContext === "function"
-              ? policy.takeAdvisorContext()
-              : null
-            if (advisorContext !== null && advisorContext !== undefined) {
-              writePlatformAdvisorContext(automatedAdvisorCallID(decision), advisorContext)
-            }
             const synthetic = syntheticResponse(parsed, decision)
             response.writeHead(200, {
               "content-type": synthetic.contentType,
