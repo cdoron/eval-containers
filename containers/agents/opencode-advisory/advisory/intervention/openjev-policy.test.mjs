@@ -342,7 +342,7 @@ test("retry compaction keeps assistant tool calls paired with their results", ()
   assert.equal(toolResult === -1 || compacted.messages[toolResult - 1].role === "assistant", true)
 })
 
-test("retry can remove the final unprotected history unit", () => {
+test("retry never removes the final unprotected history unit", () => {
   const state = {
     messages: [
       { role: "system", content: "System" },
@@ -351,8 +351,49 @@ test("retry can remove the final unprotected history unit", () => {
     ],
   }
   const compacted = compactClassifierStateForRetry(state, 2)
-  assert.deepEqual(compacted.messages, state.messages.slice(0, 2))
-  assert.equal(compacted.context_truncated, true)
+  assert.equal(compacted, null)
+})
+
+test("retry removes at most five of the oldest history units", () => {
+  const protectedMessages = [
+    { role: "system", content: "System" },
+    { role: "user", content: "Task" },
+  ]
+  const history = Array.from({ length: 20 }, (_, index) => ({
+    role: "assistant",
+    content: `Unit ${index + 1}`,
+  }))
+  const compacted = compactClassifierStateForRetry({ messages: [...protectedMessages, ...history] }, 2)
+  assert.deepEqual(compacted.messages.slice(0, 2), protectedMessages)
+  assert.equal(compacted.messages.length, 17)
+  assert.equal(compacted.messages[2].content, "Unit 6")
+  assert.equal(compacted.messages.at(-1).content, "Unit 20")
+})
+
+test("a final overflowing history unit makes OpenJev unavailable and fails open", async () => {
+  let requests = 0
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    fetchImpl: async () => {
+      requests += 1
+      return new Response(JSON.stringify({
+        error: { code: "context_length_exceeded", message: "maximum context length exceeded" },
+      }), { status: 413, headers: { "content-type": "application/json" } })
+    },
+  })
+  const decision = await policy.decide(executorRequest([
+    { role: "system", content: "System" },
+    { role: "user", content: "Task" },
+    { role: "assistant", content: "Only recent unit" },
+  ]))
+
+  assert.equal(requests, 1)
+  assert.equal(decision.selected, false)
+  assert.equal(decision.reason, "openjev-error")
+  assert.equal(decision.classifier.error, "OpenJevContextUnavailableError")
+  assert.equal(decision.classifier.http_status, 413)
+  assert.equal(policy.calls, 0)
 })
 
 test("feature-only state preserves prompts and exposes complete execution features", () => {

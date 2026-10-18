@@ -311,7 +311,8 @@ export class OpenJevInterventionPolicy {
         })
         body = await responseBody(response)
         if (!response.ok) {
-          const compacted = isContextOverflow(response, body)
+          const contextOverflow = isContextOverflow(response, body)
+          const compacted = contextOverflow
             ? compactClassifierStateForRetry(
                 state,
                 context.metadata.protected_initial_messages,
@@ -325,7 +326,7 @@ export class OpenJevInterventionPolicy {
           }
           const detail = responseError(body).message
           const error = new Error(`OpenJev returned HTTP ${response.status}${detail ? `: ${detail}` : ""}`)
-          error.name = "OpenJevHTTPError"
+          error.name = contextOverflow ? "OpenJevContextUnavailableError" : "OpenJevHTTPError"
           error.status = response.status
           throw error
         }
