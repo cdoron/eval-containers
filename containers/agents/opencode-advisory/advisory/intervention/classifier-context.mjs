@@ -14,25 +14,7 @@ function stringifyContent(content) {
   return JSON.stringify(content)
 }
 
-function truncateStart(value, maxCharacters) {
-  if (value.length <= maxCharacters) return { value, truncated: false }
-  return { value: `${value.slice(0, maxCharacters)}\n[message truncated]`, truncated: true }
-}
-
-function truncateHeadTail(value, maxCharacters, label) {
-  if (value.length <= maxCharacters) return { value, truncated: false, original_characters: value.length }
-  const marker = `\n[${label} truncated; original characters: ${value.length}]\n`
-  const available = Math.max(0, maxCharacters - marker.length)
-  const headCharacters = Math.ceil(available / 2)
-  const tailCharacters = Math.floor(available / 2)
-  return {
-    value: `${value.slice(0, headCharacters)}${marker}${value.slice(value.length - tailCharacters)}`,
-    truncated: true,
-    original_characters: value.length,
-  }
-}
-
-function messageText(message, maxStringCharacters) {
+function messageText(message) {
   const parts = []
   if (message.content !== undefined && message.content !== null && message.content !== "") {
     parts.push(stringifyContent(message.content))
@@ -40,16 +22,16 @@ function messageText(message, maxStringCharacters) {
   if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
     parts.push(`Tool calls: ${JSON.stringify(message.tool_calls)}`)
   }
-  return truncateStart(parts.join("\n\n"), maxStringCharacters).value
+  return parts.join("\n\n")
 }
 
-function compactMessage(message, maxStringCharacters) {
+function compactMessage(message) {
   if (!message || typeof message !== "object") {
     return { role: "unknown", content: String(message) }
   }
   const compacted = {
     role: typeof message.role === "string" ? message.role : "unknown",
-    content: messageText(message, maxStringCharacters),
+    content: messageText(message),
   }
   if (typeof message.name === "string" && message.name) compacted.name = message.name
   if (typeof message.tool_call_id === "string" && message.tool_call_id) {
@@ -58,28 +40,11 @@ function compactMessage(message, maxStringCharacters) {
   return compacted
 }
 
-function serializedBytes(value) {
-  return Buffer.byteLength(JSON.stringify(value), "utf8")
-}
-
-function contextMetadata(state, details) {
+export function classifierStateMetadata(state, details = {}) {
   const serialized = JSON.stringify(state)
   return {
-    bytes: Buffer.byteLength(serialized, "utf8"),
-    sha256: crypto.createHash("sha256").update(serialized).digest("hex"),
     ...details,
-  }
-}
-
-function shortenLongestMessage(state, maxBytes, protectedInitialCount) {
-  while (serializedBytes(state) > maxBytes) {
-    const candidates = state.messages
-      .map((message, index) => ({ index, length: message.content.length }))
-      .filter(({ index, length }) => index >= protectedInitialCount && length > 64)
-      .sort((a, b) => b.length - a.length)
-    if (candidates.length === 0) break
-    const message = state.messages[candidates[0].index]
-    message.content = `${message.content.slice(0, Math.max(64, Math.floor(message.content.length / 2)))}\n[message truncated]`
+    sha256: crypto.createHash("sha256").update(serialized).digest("hex"),
   }
 }
 
@@ -132,17 +97,15 @@ function toolResultsByID(messages) {
   return results
 }
 
-function latestSuccessfulAdvice(messages, maxCharacters) {
+function latestSuccessfulAdvice(messages) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message?.role !== "tool" || !isAutomatedAdvisorCallID(message.tool_call_id)) continue
     if (!isSuccessfulAutomatedAdvisorResult(message.content)) continue
     const advice = message.content.slice(PLATFORM_ADVISOR_MESSAGE_PREFIX.length).trim()
-    const compacted = truncateHeadTail(advice, maxCharacters, "latest advice")
     return {
-      content: compacted.value,
-      truncated: compacted.truncated,
-      original_characters: compacted.original_characters,
+      content: advice,
+      omitted_after_token_overflow: false,
     }
   }
   return null
@@ -162,7 +125,7 @@ function turnsSinceLatestAdvisorCall(messages) {
   return messages.slice(latestAdvisorCallIndex + 1).filter(completedExecutorModelCall).length
 }
 
-function classifierFeatures(messages, calls, featureConfig) {
+function classifierFeatures(messages, calls) {
   const toolResults = toolResultsByID(messages)
   const toolCounts = {}
   let latestCall = null
@@ -189,15 +152,11 @@ function classifierFeatures(messages, calls, featureConfig) {
   let latestToolCall = null
   if (latestCall) {
     const rawResult = toolResults.get(latestCall.id)
-    const result = rawResult === undefined
-      ? null
-      : truncateHeadTail(rawResult, featureConfig.max_tool_result_characters, "tool result")
     latestToolCall = {
       name: latestCall?.function?.name || "unknown",
       arguments: latestCall?.function?.arguments ?? "",
-      result: result?.value ?? null,
-      result_truncated: result?.truncated ?? false,
-      result_original_characters: result?.original_characters ?? null,
+      result: rawResult ?? null,
+      result_omitted_after_token_overflow: false,
     }
   }
 
@@ -207,7 +166,7 @@ function classifierFeatures(messages, calls, featureConfig) {
     advisor_calls_total: calls,
     model_calls_total: messages.filter(completedExecutorModelCall).length,
     latest_tool_call: latestToolCall,
-    latest_advice: latestSuccessfulAdvice(messages, featureConfig.max_latest_advice_characters),
+    latest_advice: latestSuccessfulAdvice(messages),
   }
 }
 
@@ -225,41 +184,79 @@ function addConfiguredFields(state, { turn, calls, maxCalls, stateConfig }) {
   }
 }
 
-function addCompactedMessages(state, messages, contextConfig, protectedInitialMessages) {
-  const originalMessageCount = messages.length
+function addClassifierMessages(state, messages, contextConfig, protectedInitialMessages) {
   const protectedInitialCount = contextConfig.preserve_initial_task
     ? protectedInitialMessages.length
     : 0
   state.messages = contextConfig.preserve_initial_task
     ? prependProtectedInitialMessages(messages, protectedInitialMessages)
     : messages
-  if (serializedBytes(state) <= contextConfig.max_bytes) {
-    return { truncated: false, originalMessageCount, protectedInitialCount }
-  }
+  return { originalMessageCount: state.messages.length, protectedInitialCount }
+}
 
-  const allMessages = state.messages
-  const selected = allMessages.slice(0, protectedInitialCount)
-  const firstRecentIndex = protectedInitialCount
-  if (contextConfig.preserve_recent_messages) {
-    let includedRecent = 0
-    for (let index = allMessages.length - 1; index >= firstRecentIndex; index -= 1) {
-      const candidate = [
-        ...allMessages.slice(0, protectedInitialCount),
-        allMessages[index],
-        ...selected.slice(protectedInitialCount),
-      ]
-      const candidateState = { ...state, messages: candidate }
-      if (serializedBytes(candidateState) <= contextConfig.max_bytes || includedRecent === 0) {
-        selected.splice(protectedInitialCount, 0, allMessages[index])
-        includedRecent += 1
-      }
+function historyUnits(messages) {
+  const units = []
+  for (const message of messages) {
+    const previous = units.at(-1)
+    if (message?.role === "tool" && previous?.[0]?.role === "assistant") {
+      previous.push(message)
+    } else {
+      units.push([message])
     }
   }
-  state.messages = selected
-  state.context_truncated = true
-  state.original_message_count = originalMessageCount
-  shortenLongestMessage(state, contextConfig.max_bytes, protectedInitialCount)
-  return { truncated: true, originalMessageCount, protectedInitialCount }
+  return units
+}
+
+function omitRetryableFeature(state) {
+  const compacted = structuredClone(state)
+  if (typeof compacted.features?.latest_advice?.content === "string") {
+    compacted.features.latest_advice.content = null
+    compacted.features.latest_advice.omitted_after_token_overflow = true
+  } else if (typeof compacted.features?.latest_tool_call?.result === "string") {
+    compacted.features.latest_tool_call.result = null
+    compacted.features.latest_tool_call.result_omitted_after_token_overflow = true
+  } else {
+    return null
+  }
+  compacted.context_truncated = true
+  return compacted
+}
+
+export function compactClassifierStateForRetry(state, protectedInitialCount, preserveRecentMessages = true) {
+  if (!Array.isArray(state.messages)) return omitRetryableFeature(state)
+  const protectedMessages = state.messages.slice(0, protectedInitialCount)
+  if (!preserveRecentMessages) {
+    if (state.messages.length !== protectedMessages.length) {
+      return {
+        ...state,
+        messages: protectedMessages,
+        context_truncated: true,
+        original_message_count: state.original_message_count ?? state.messages.length,
+      }
+    }
+    return omitRetryableFeature(state)
+  }
+  const units = historyUnits(state.messages.slice(protectedInitialCount))
+  if (units.length <= 1) {
+    const compactedFeatures = omitRetryableFeature(state)
+    if (compactedFeatures) return compactedFeatures
+    if (units.length === 0) return null
+    return {
+      ...state,
+      messages: protectedMessages,
+      context_truncated: true,
+      original_message_count: state.original_message_count ?? state.messages.length,
+    }
+  }
+
+  const removeCount = Math.max(1, Math.floor(units.length / 2))
+  const retained = units.slice(removeCount).flat()
+  return {
+    ...state,
+    messages: [...protectedMessages, ...retained],
+    context_truncated: true,
+    original_message_count: state.original_message_count ?? state.messages.length,
+  }
 }
 
 export function buildClassifierState({ request, turn, calls, maxCalls, stateConfig, initialPromptMessages }) {
@@ -268,12 +265,11 @@ export function buildClassifierState({ request, turn, calls, maxCalls, stateConf
   const initialMessages = Array.isArray(initialPromptMessages) && initialPromptMessages.length > 0
     ? initialPromptMessages
     : captureInitialPromptMessages(originalMessages)
-  const protectedInitialMessages = initialMessages
-    .map((message) => compactMessage(message, contextConfig.max_string_characters))
+  const protectedInitialMessages = initialMessages.map(compactMessage)
   const rewritten = rewriteAutomatedAdvisorMessages(originalMessages)
   const messages = (Array.isArray(rewritten) ? rewritten : [])
     .filter((message) => contextConfig.include_tool_results || message?.role !== "tool")
-    .map((message) => compactMessage(message, contextConfig.max_string_characters))
+    .map(compactMessage)
 
   const state = {}
   addConfiguredFields(state, { turn, calls, maxCalls, stateConfig })
@@ -281,12 +277,12 @@ export function buildClassifierState({ request, turn, calls, maxCalls, stateConf
   if (stateConfig.input_mode !== "context") {
     state.initial_system_prompt = initialPrompt(initialMessages, "system")
     state.task_prompt = initialPrompt(initialMessages, "user")
-    state.features = classifierFeatures(originalMessages, calls, stateConfig.features)
+    state.features = classifierFeatures(originalMessages, calls)
   }
 
-  let contextDetails = { truncated: false, originalMessageCount: 0, protectedInitialCount: 0 }
+  let contextDetails = { originalMessageCount: 0, protectedInitialCount: 0 }
   if (stateConfig.input_mode !== "features_only") {
-    contextDetails = addCompactedMessages(
+    contextDetails = addClassifierMessages(
       state,
       messages,
       contextConfig,
@@ -294,15 +290,12 @@ export function buildClassifierState({ request, turn, calls, maxCalls, stateConf
     )
   }
 
-  if (serializedBytes(state) > contextConfig.max_bytes) {
-    throw new Error(`OpenJev classifier state cannot fit max_bytes=${contextConfig.max_bytes}`)
-  }
   const includedMessages = Array.isArray(state.messages) ? state.messages.length : 0
   return {
     state,
-    metadata: contextMetadata(state, {
+    metadata: classifierStateMetadata(state, {
       input_mode: stateConfig.input_mode,
-      truncated: contextDetails.truncated,
+      truncated: false,
       original_messages: contextDetails.originalMessageCount,
       included_messages: includedMessages,
       protected_initial_messages: contextDetails.protectedInitialCount,

@@ -122,12 +122,36 @@ function compactAssistantMessage(message, currentMessageID) {
   return compacted
 }
 
+function initialUserContext(messages) {
+  const initial = []
+  for (const message of messages) {
+    const info = message?.info && typeof message.info === "object" ? message.info : {}
+    if (info.role === "assistant") break
+    if (info.role !== "user") continue
+    initial.push(...compactUserMessage({
+      info,
+      parts: Array.isArray(message.parts) ? message.parts : [],
+    }))
+  }
+  return initial
+}
+
+function prependMissingMessages(messages, requiredMessages) {
+  const remaining = [...messages]
+  for (const required of requiredMessages) {
+    const signature = JSON.stringify(required)
+    const index = remaining.findIndex((message) => JSON.stringify(message) === signature)
+    if (index >= 0) remaining.splice(index, 1)
+  }
+  return [...requiredMessages, ...remaining]
+}
+
 export function buildSessionContext({ session, currentMessageID, executorSystemPrompt }) {
   if (!session || !Array.isArray(session.messages)) {
     throw new Error("opencode session export does not contain a messages array")
   }
 
-  const messages = modelVisibleMessages(session.messages).flatMap((message) => {
+  const visibleMessages = modelVisibleMessages(session.messages).flatMap((message) => {
     const info = message.info && typeof message.info === "object" ? message.info : {}
     const withParts = {
       info,
@@ -137,6 +161,10 @@ export function buildSessionContext({ session, currentMessageID, executorSystemP
     if (info.role === "assistant") return compactAssistantMessage(withParts, currentMessageID)
     return []
   })
+  const messages = prependMissingMessages(
+    visibleMessages,
+    initialUserContext(session.messages),
+  )
 
   return {
     schema_version: 2,

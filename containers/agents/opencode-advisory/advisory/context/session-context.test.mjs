@@ -128,7 +128,7 @@ test("removes OpenCode bookkeeping and duplicated tool metadata", () => {
   }
 })
 
-test("uses OpenCode's completed compaction boundary", () => {
+test("uses OpenCode's completed compaction boundary without losing the original task", () => {
   const session = {
     messages: [
       { info: { id: "old-user", role: "user" }, parts: [{ type: "text", text: "Old raw task" }] },
@@ -153,10 +153,37 @@ test("uses OpenCode's completed compaction boundary", () => {
   const context = buildSessionContext({ session, currentMessageID: "current", executorSystemPrompt: "" })
 
   assert.deepEqual(context.messages, [
+    { role: "user", content: "Old raw task" },
     { role: "user", content: "What did we do so far?" },
     { role: "assistant", content: "Compact summary of earlier work" },
     { role: "assistant", content: "Work after compaction" },
   ])
+})
+
+test("preserves original task constraints and bridge instructions after compaction", () => {
+  const originalTask = "Use the bridge APIs. Do NOT modify test files. Finish the requested task."
+  const session = {
+    messages: [
+      { info: { id: "task", role: "user" }, parts: [{ type: "text", text: originalTask }] },
+      { info: { id: "first", role: "assistant" }, parts: [{ type: "text", text: "Initial work" }] },
+      { info: { id: "compact-user", role: "user" }, parts: [{ type: "compaction" }] },
+      {
+        info: { id: "summary", parentID: "compact-user", role: "assistant", summary: true, finish: "stop" },
+        parts: [{ type: "text", text: "Summary without the authoritative constraints" }],
+      },
+      { info: { id: "current", role: "assistant" }, parts: [{ type: "text", text: "Recent reasoning" }] },
+    ],
+  }
+
+  const context = buildSessionContext({
+    session,
+    currentMessageID: "current",
+    executorSystemPrompt: "Executor environment instructions",
+  })
+
+  assert.equal(context.executor_system_prompt, "Executor environment instructions")
+  assert.equal(context.messages[0].content, originalTask)
+  assert.equal(context.messages.at(-1).content, "Recent reasoning")
 })
 
 test("uses the executor placeholder for compacted tool output", () => {

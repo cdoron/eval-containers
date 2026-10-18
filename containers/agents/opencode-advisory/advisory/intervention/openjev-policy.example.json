@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "request": {
     "model": "openjev",
     "question_name": "advisor_decision",
@@ -19,15 +19,10 @@
     "include_advisor_calls_used": true,
     "include_advisor_calls_remaining": true,
     "context": {
-      "max_bytes": 48000,
-      "max_string_characters": 12000,
+      "max_input_tokens": 32767,
       "preserve_initial_task": true,
       "preserve_recent_messages": true,
       "include_tool_results": true
-    },
-    "features": {
-      "max_tool_result_characters": 12000,
-      "max_latest_advice_characters": 12000
     }
   },
   "decision": {

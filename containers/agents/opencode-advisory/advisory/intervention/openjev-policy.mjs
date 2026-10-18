@@ -1,13 +1,18 @@
 "use strict"
 
 import crypto from "node:crypto"
-import { buildClassifierState, captureInitialPromptMessages } from "./classifier-context.mjs"
+import {
+  buildClassifierState,
+  captureInitialPromptMessages,
+  classifierStateMetadata,
+  compactClassifierStateForRetry,
+} from "./classifier-context.mjs"
 import { parseAdvisorCallLimit, parseOptionalPositiveInteger } from "./policy-config.mjs"
 
 export { parseAdvisorCallLimit } from "./policy-config.mjs"
 
 export const DEFAULT_OPENJEV_POLICY_CONFIG = Object.freeze({
-  schema_version: 1,
+  schema_version: 2,
   request: {
     model: "openjev",
     question_name: "advisor_decision",
@@ -27,16 +32,12 @@ export const DEFAULT_OPENJEV_POLICY_CONFIG = Object.freeze({
     include_advisor_calls_used: true,
     include_advisor_calls_remaining: true,
     context: {
-      max_bytes: 48000,
-      max_string_characters: 12000,
+      max_input_tokens: 32767,
       preserve_initial_task: true,
       preserve_recent_messages: true,
       include_tool_results: true,
     },
-    features: {
-      max_tool_result_characters: 12000,
-      max_latest_advice_characters: 12000,
-    },
+    features: {},
   },
   decision: {
     call_choice: "call_advisor",
@@ -84,6 +85,21 @@ function requireString(value, path) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${path} must be a non-empty string`)
 }
 
+function migrateLegacyConfig(value) {
+  if (value.schema_version !== 1) return value
+  const migrated = structuredClone(value)
+  migrated.schema_version = 2
+  if (plainObject(migrated.state?.context)) {
+    delete migrated.state.context.max_bytes
+    delete migrated.state.context.max_string_characters
+  }
+  if (plainObject(migrated.state?.features)) {
+    delete migrated.state.features.max_tool_result_characters
+    delete migrated.state.features.max_latest_advice_characters
+  }
+  return migrated
+}
+
 export function parseOpenJevPolicyConfig(raw = "") {
   let supplied = {}
   if (raw.trim()) {
@@ -94,8 +110,18 @@ export function parseOpenJevPolicyConfig(raw = "") {
     }
   }
   if (!plainObject(supplied)) throw new Error("EVAL_ADVISOR_OPENJEV_POLICY_CONFIG must be a JSON object")
+  supplied = migrateLegacyConfig(supplied)
+  if (plainObject(supplied.state?.context) &&
+      ("max_bytes" in supplied.state.context || "max_string_characters" in supplied.state.context)) {
+    throw new Error("OpenJev byte/character context limits were removed; use state.context.max_input_tokens")
+  }
+  if (plainObject(supplied.state?.features) &&
+      ("max_tool_result_characters" in supplied.state.features ||
+       "max_latest_advice_characters" in supplied.state.features)) {
+    throw new Error("OpenJev feature character limits were removed; max_input_tokens now governs the complete classifier request")
+  }
   const config = mergeConfig(supplied)
-  if (config.schema_version !== 1) throw new Error("OpenJev policy schema_version must be 1")
+  if (config.schema_version !== 2) throw new Error("OpenJev policy schema_version must be 2")
   if (!plainObject(config.request) || !plainObject(config.request.question)) {
     throw new Error("OpenJev policy request.question must be an object")
   }
@@ -136,16 +162,8 @@ export function parseOpenJevPolicyConfig(raw = "") {
       throw new Error(`OpenJev state.context.${key} must be boolean`)
     }
   }
-  if (!Number.isSafeInteger(config.state.context.max_bytes) || config.state.context.max_bytes < 1024) {
-    throw new Error("OpenJev state.context.max_bytes must be an integer of at least 1024")
-  }
-  if (!Number.isSafeInteger(config.state.context.max_string_characters) || config.state.context.max_string_characters < 64) {
-    throw new Error("OpenJev state.context.max_string_characters must be an integer of at least 64")
-  }
-  for (const key of ["max_tool_result_characters", "max_latest_advice_characters"]) {
-    if (!Number.isSafeInteger(config.state.features[key]) || config.state.features[key] < 64) {
-      throw new Error(`OpenJev state.features.${key} must be an integer of at least 64`)
-    }
+  if (!Number.isSafeInteger(config.state.context.max_input_tokens) || config.state.context.max_input_tokens < 1024) {
+    throw new Error("OpenJev state.context.max_input_tokens must be an integer of at least 1024")
   }
   return config
 }
@@ -177,6 +195,27 @@ function classifierError(error, latencyMs, contextMetadata) {
   }
 }
 
+function responseError(body) {
+  return body?.error && typeof body.error === "object" ? body.error : {}
+}
+
+function isContextOverflow(response, body) {
+  const error = responseError(body)
+  const code = String(error.code || error.type || "").toLowerCase()
+  const message = String(error.message || "").toLowerCase()
+  return response.status === 413 || code.includes("context") || message.includes("context length")
+}
+
+async function responseBody(response) {
+  const text = await response.text()
+  if (!text) return {}
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { error: { message: text.slice(0, 500) } }
+  }
+}
+
 export class OpenJevInterventionPolicy {
   constructor({ baseURL, apiKey, timeoutSeconds = 30, interval = 1, maxCalls, maxTurns = 0, policyConfig = "", fetchImpl = fetch }) {
     requireString(baseURL, "OPENJEV_BASE_URL")
@@ -204,6 +243,7 @@ export class OpenJevInterventionPolicy {
     this.calls = 0
     this.forceExecutorNext = false
     this.initialPromptMessages = null
+    this.lastInputTokens = null
   }
 
   readyMetadata() {
@@ -212,6 +252,7 @@ export class OpenJevInterventionPolicy {
       max_calls_unlimited: this.maxCalls === null,
       max_turns: this.maxTurns,
       interval: this.interval,
+      max_input_tokens: this.config.state.context.max_input_tokens,
       policy_config_sha256: this.configSha256,
     }
   }
@@ -247,28 +288,69 @@ export class OpenJevInterventionPolicy {
         stateConfig: this.config.state,
         initialPromptMessages: this.initialPromptMessages,
       })
-      const response = await this.fetchImpl(this.url, {
-        method: "POST",
-        signal: AbortSignal.timeout(this.timeoutSeconds * 1000),
-        headers: {
-          authorization: `Bearer ${this.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: this.config.request.model,
-          state: context.state,
-          questions: {
-            [this.config.request.question_name]: this.config.request.question,
+      let state = context.state
+      let body
+      let inputTokens
+      let compactionAttempts = 0
+      const previousInputTokens = this.lastInputTokens
+      while (true) {
+        const response = await this.fetchImpl(this.url, {
+          method: "POST",
+          signal: AbortSignal.timeout(this.timeoutSeconds * 1000),
+          headers: {
+            authorization: `Bearer ${this.apiKey}`,
+            "content-type": "application/json",
           },
-        }),
-      })
-      if (!response.ok) {
-        const error = new Error(`OpenJev returned HTTP ${response.status}`)
-        error.name = "OpenJevHTTPError"
-        error.status = response.status
-        throw error
+          body: JSON.stringify({
+            model: this.config.request.model,
+            state,
+            questions: {
+              [this.config.request.question_name]: this.config.request.question,
+            },
+          }),
+        })
+        body = await responseBody(response)
+        if (!response.ok) {
+          const compacted = isContextOverflow(response, body)
+            ? compactClassifierStateForRetry(
+                state,
+                context.metadata.protected_initial_messages,
+                this.config.state.context.preserve_recent_messages,
+              )
+            : null
+          if (compacted) {
+            state = compacted
+            compactionAttempts += 1
+            continue
+          }
+          const detail = responseError(body).message
+          const error = new Error(`OpenJev returned HTTP ${response.status}${detail ? `: ${detail}` : ""}`)
+          error.name = "OpenJevHTTPError"
+          error.status = response.status
+          throw error
+        }
+        inputTokens = body?.usage?.input_tokens
+        if (!Number.isSafeInteger(inputTokens) || inputTokens < 0) {
+          const error = new Error("OpenJev response is missing usage.input_tokens")
+          error.name = "OpenJevResponseError"
+          throw error
+        }
+        if (inputTokens <= this.config.state.context.max_input_tokens) break
+        const compacted = compactClassifierStateForRetry(
+          state,
+          context.metadata.protected_initial_messages,
+          this.config.state.context.preserve_recent_messages,
+        )
+        if (!compacted) {
+          const error = new Error(
+            `OpenJev protected and most-recent context requires ${inputTokens} input tokens, exceeding max_input_tokens=${this.config.state.context.max_input_tokens}`,
+          )
+          error.name = "OpenJevTokenLimitError"
+          throw error
+        }
+        state = compacted
+        compactionAttempts += 1
       }
-      const body = await response.json()
       const answer = body?.answers?.[this.config.request.question_name]
       const choice = answer?.choice
       if (choice !== this.config.decision.call_choice && choice !== this.config.decision.continue_choice) {
@@ -277,6 +359,7 @@ export class OpenJevInterventionPolicy {
         throw error
       }
       const selected = choice === this.config.decision.call_choice
+      this.lastInputTokens = inputTokens
       if (selected) {
         this.calls += 1
         this.forceExecutorNext = true
@@ -291,8 +374,16 @@ export class OpenJevInterventionPolicy {
           probabilities: answer.probabilities,
           confidence: answer.confidence,
           model: body.model,
+          input_tokens: inputTokens,
+          max_input_tokens: this.config.state.context.max_input_tokens,
+          previous_input_tokens: previousInputTokens,
+          compaction_attempts: compactionAttempts,
           latency_ms: Date.now() - started,
-          ...context.metadata,
+          ...classifierStateMetadata(state, {
+            ...context.metadata,
+            truncated: compactionAttempts > 0,
+            included_messages: Array.isArray(state.messages) ? state.messages.length : 0,
+          }),
         },
       }
     } catch (error) {
