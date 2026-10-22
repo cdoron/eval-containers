@@ -57,15 +57,34 @@ baked, shared artifact that ignores `EVAL_MODEL`. Both are pull-not-build; see
 | `EVAL_ADVISOR_TOOL_DESCRIPTION_VARIANT` | Built-in or external named tool description | `neutral` |
 | `EVAL_ADVISOR_CONTEXT_MODE` | Advisor input source: `agent-provided` or `full-session` | `agent-provided` |
 | `EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES` | Serialized full-session limit; overflow fails, `0` is unlimited | `0` |
+| `EVAL_ADVISOR_TIMEOUT_SECONDS` | Per-attempt advisor endpoint timeout | `300` |
+| `EVAL_ADVISOR_TRANSIENT_RETRIES` | Additional transient advisor and decision-model attempts | `3` |
+| `EVAL_ADVISOR_RETRY_DELAY_SECONDS` | Delay between transient retries in seconds | `30` |
+| `EVAL_ADVISOR_INVOCATION_POLICY` | `self-initiated`, `random`, `openjev`, `sii-decision`, or `fixed` | `self-initiated` |
+| `EVAL_ADVISOR_RANDOM_PROBABILITY` | Per-eligible-turn probability for random selection | — |
+| `EVAL_ADVISOR_MAX_CALLS` | Optional positive platform-call cap; empty or `unlimited` is uncapped | unlimited |
+| `EVAL_ADVISOR_RANDOM_SEED` | Deterministic random-policy seed | — |
+| `EVAL_ADVISOR_OPENJEV_TIMEOUT_SECONDS` | OpenJEV request timeout | `30` |
+| `EVAL_ADVISOR_OPENJEV_INTERVAL` | Query OpenJEV every N eligible turns | `1` |
+| `EVAL_ADVISOR_OPENJEV_POLICY_CONFIG` | OpenJEV schema-versioned policy JSON | unset |
+| `EVAL_ADVISOR_SII_DECISION_TIMEOUT_SECONDS` | SII Decision request timeout | `30` |
+| `EVAL_ADVISOR_SII_DECISION_INTERVAL` | Query SII Decision every N eligible turns | `1` |
+| `EVAL_ADVISOR_SII_DECISION_LOGPROBS` | Top completion-token log probabilities requested from SII Decision | `20` |
+| `EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG` | SII Decision schema-versioned policy JSON | unset |
+| `EVAL_ADVISOR_FIXED_TURN` | Make one platform advisor call at eligible turn Y | unset |
+| `EVAL_ADVISOR_FIXED_INTERVAL` | Make platform advisor calls every X eligible turns | unset |
+| `EVAL_EXECUTOR_MAX_TURNS` | Maximum eligible executor turns; `0` is unlimited | `0` |
 
 Advisor-specific runtime variables are loaded only by the
 `opencode-advisory` Compose overlay. Experimental prompt and description
 settings use the `EVAL_*` variables above. Service settings are
 `ADVISOR_MODEL`, `ADVISOR_BASE_URL`, `ADVISOR_API_KEY`,
-`ADVISORY_EXPERIMENT_ID`, and `ADVISOR_LOG_PAYLOADS`. `OPENAI_API_BASE` and
+`ADVISORY_EXPERIMENT_ID`, and `ADVISOR_LOG_PAYLOADS`. OpenJEV and SII Decision
+use their own `OPENJEV_*` and `SII_DECISION_*` endpoint/credential pairs.
+`OPENAI_API_BASE` and
 `OPENAI_API_KEY` configure the executor gateway; the `ADVISOR_*` endpoint and
 key configure only the advisor sidecar. Set both pairs explicitly in `.env`;
-neither pair inherits from the other. Advisor calls emit separate role-tagged
+none of these pairs inherits from another. Advisor calls emit separate role-tagged
 spans with their input/output messages, model, and input/output token usage.
 Experiment JSON deliberately excludes secrets.
 

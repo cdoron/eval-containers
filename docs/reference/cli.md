@@ -62,6 +62,27 @@ overrides the env var.
 | `--advisor-log-payloads[=true\|false]` | `ADVISOR_LOG_PAYLOADS` | off by default; bare flag means true |
 | `--advisor-context-mode <agent-provided\|full-session>` | `EVAL_ADVISOR_CONTEXT_MODE` | full-session exports the active OpenCode conversation |
 | `--advisor-full-context-max-bytes <bytes>` | `EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES` | `0` is unlimited; nonzero overflow fails without truncating |
+| `--advisor-timeout-seconds <seconds>` | `EVAL_ADVISOR_TIMEOUT_SECONDS` | per advisor attempt |
+| `--advisor-transient-retries <count>` | `EVAL_ADVISOR_TRANSIENT_RETRIES` | transient advisor and decision-model retries |
+| `--advisor-retry-delay-seconds <seconds>` | `EVAL_ADVISOR_RETRY_DELAY_SECONDS` | delay between transient retries |
+| `--advisor-invocation-policy <policy>` | `EVAL_ADVISOR_INVOCATION_POLICY` | self-initiated, random, openjev, sii-decision, or fixed |
+| `--advisor-random-probability <probability>` | `EVAL_ADVISOR_RANDOM_PROBABILITY` | random selection probability from 0 to 1 |
+| `--advisor-max-calls <count\|unlimited>` | `EVAL_ADVISOR_MAX_CALLS` | optional platform-call cap |
+| `--advisor-random-seed <seed>` | `EVAL_ADVISOR_RANDOM_SEED` | deterministic random-policy seed |
+| `--openjev-base-url <url>` | `OPENJEV_BASE_URL` | credential stays in `OPENJEV_API_KEY` env |
+| `--advisor-openjev-timeout-seconds <seconds>` | `EVAL_ADVISOR_OPENJEV_TIMEOUT_SECONDS` | decision request timeout |
+| `--advisor-openjev-interval <turns>` | `EVAL_ADVISOR_OPENJEV_INTERVAL` | query every N eligible turns |
+| `--advisor-openjev-policy-config <json>` | `EVAL_ADVISOR_OPENJEV_POLICY_CONFIG` | inline schema-versioned policy |
+| `--advisor-openjev-policy-config-file <path>` | reads into `EVAL_ADVISOR_OPENJEV_POLICY_CONFIG` | host JSON file |
+| `--sii-decision-base-url <url>` | `SII_DECISION_BASE_URL` | credential stays in `SII_DECISION_API_KEY` env |
+| `--advisor-sii-decision-timeout-seconds <seconds>` | `EVAL_ADVISOR_SII_DECISION_TIMEOUT_SECONDS` | decision request timeout |
+| `--advisor-sii-decision-interval <turns>` | `EVAL_ADVISOR_SII_DECISION_INTERVAL` | query every N eligible turns |
+| `--advisor-sii-decision-logprobs <count>` | `EVAL_ADVISOR_SII_DECISION_LOGPROBS` | top completion-token probabilities, 2 to 256 |
+| `--advisor-sii-decision-policy-config <json>` | `EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG` | inline schema-versioned policy |
+| `--advisor-sii-decision-policy-config-file <path>` | reads into `EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG` | host JSON file |
+| `--advisor-fixed-turn <turn>` | `EVAL_ADVISOR_FIXED_TURN` | one call at an eligible turn |
+| `--advisor-fixed-interval <turns>` | `EVAL_ADVISOR_FIXED_INTERVAL` | recurring eligible-turn schedule |
+| `--executor-max-turns <turns>` | `EVAL_EXECUTOR_MAX_TURNS` | `0` means unlimited |
 | `--experiment-id <id>` | `ADVISORY_EXPERIMENT_ID` | trace/experiment label |
 | `--mode <compose\|container\|job>` | — | default `compose` |
 | `--benchmark-tag <tag>` | `EVAL_BENCHMARK_TAG` | image tag |

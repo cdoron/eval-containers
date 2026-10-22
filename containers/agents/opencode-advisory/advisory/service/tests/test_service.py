@@ -17,8 +17,19 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from advisor_service.advisor_runner import get_advice
 from advisor_service.config import DEFAULT_ADVISOR_SYSTEM_PROMPT, resolve_advisor_system_prompt
-from advisor_service.llm_client import _chat_completions_url, _timeout_seconds
-from advisor_service.main import _SuppressHealthAccessLogs, _openjev_url, app
+from advisor_service.llm_client import (
+    _chat_completions_url,
+    _retry_delay_seconds,
+    _timeout_seconds,
+    _transient_retries,
+    chat_completions,
+)
+from advisor_service.main import (
+    _SuppressHealthAccessLogs,
+    _openjev_url,
+    _sii_decision_url,
+    app,
+)
 from advisor_service.telemetry import _trace_endpoint
 
 
@@ -145,6 +156,43 @@ class AdvisorServiceTests(unittest.TestCase):
                 "https://openjev.test/v1/systemone",
             )
 
+    def test_sii_decision_proxy_uses_sidecar_credentials_and_preserves_payload(self) -> None:
+        upstream = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"usage": {"prompt_tokens": 42}, "choices": []},
+            )
+        )
+        payload = {"model": "sii-decision-27b", "prompt": "State: ..."}
+        with (
+            patch("advisor_service.main.config.SII_DECISION_BASE_URL", "https://sii.test/v1"),
+            patch("advisor_service.main.config.SII_DECISION_API_KEY", "sii-secret"),
+            patch("advisor_service.main.httpx.AsyncClient.post", upstream),
+        ):
+            response = self.client.post(
+                "/sii-decision/v1/completions",
+                json=payload,
+                headers={"authorization": "Bearer proxy"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        args, kwargs = upstream.await_args
+        self.assertEqual(args[0], "https://sii.test/v1/completions")
+        self.assertEqual(kwargs["headers"]["authorization"], "Bearer sii-secret")
+        self.assertEqual(json.loads(kwargs["content"]), payload)
+
+    def test_sii_decision_proxy_rejects_missing_upstream_configuration(self) -> None:
+        with patch("advisor_service.main.config.SII_DECISION_BASE_URL", ""):
+            response = self.client.post("/sii-decision/v1/completions", json={})
+        self.assertEqual(response.status_code, 503)
+
+    def test_sii_decision_proxy_url_avoids_duplicate_v1(self) -> None:
+        with patch("advisor_service.main.config.SII_DECISION_BASE_URL", "https://sii.test/v1"):
+            self.assertEqual(
+                _sii_decision_url("v1/completions"),
+                "https://sii.test/v1/completions",
+            )
+
     def test_base_url_normalization(self) -> None:
         self.assertEqual(
             _chat_completions_url("https://litellm.example.com/v1"),
@@ -162,6 +210,158 @@ class AdvisorServiceTests(unittest.TestCase):
             with patch.dict(os.environ, {"EVAL_ADVISOR_TIMEOUT_SECONDS": value}):
                 with self.assertRaises(ValueError):
                     _timeout_seconds()
+
+    def test_advisor_retry_configuration_is_bounded(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "EVAL_ADVISOR_TRANSIENT_RETRIES": "3",
+                "EVAL_ADVISOR_RETRY_DELAY_SECONDS": "30",
+            },
+        ):
+            self.assertEqual(_transient_retries(), 3)
+            self.assertEqual(_retry_delay_seconds(), 30.0)
+        for name, value in (
+            ("EVAL_ADVISOR_TRANSIENT_RETRIES", "101"),
+            ("EVAL_ADVISOR_TRANSIENT_RETRIES", "invalid"),
+            ("EVAL_ADVISOR_RETRY_DELAY_SECONDS", "86401"),
+            ("EVAL_ADVISOR_RETRY_DELAY_SECONDS", "invalid"),
+        ):
+            with patch.dict(os.environ, {name: value}):
+                with self.assertRaises(ValueError):
+                    if name == "EVAL_ADVISOR_TRANSIENT_RETRIES":
+                        _transient_retries()
+                    else:
+                        _retry_delay_seconds()
+
+    def test_advisor_model_retries_read_timeout_then_succeeds(self) -> None:
+        request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+        post = AsyncMock(
+            side_effect=[
+                httpx.ReadTimeout("timed out", request=request),
+                httpx.Response(200, request=request, json={"choices": []}),
+            ]
+        )
+        sleep = AsyncMock()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "EVAL_ADVISOR_TRANSIENT_RETRIES": "3",
+                    "EVAL_ADVISOR_RETRY_DELAY_SECONDS": "30",
+                },
+            ),
+            patch("advisor_service.llm_client.httpx.AsyncClient.post", post),
+            patch("advisor_service.llm_client.asyncio.sleep", sleep),
+        ):
+            response = asyncio.run(
+                chat_completions(
+                    "https://example.test/v1",
+                    "secret",
+                    {"model": "advisor", "messages": []},
+                )
+            )
+
+        self.assertEqual(response, {"choices": []})
+        self.assertEqual(post.await_count, 2)
+        sleep.assert_awaited_once_with(30.0)
+
+    def test_advisor_model_retries_retryable_http_status(self) -> None:
+        request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+        post = AsyncMock(
+            side_effect=[
+                httpx.Response(503, request=request),
+                httpx.Response(200, request=request, json={"choices": []}),
+            ]
+        )
+        sleep = AsyncMock()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "EVAL_ADVISOR_TRANSIENT_RETRIES": "3",
+                    "EVAL_ADVISOR_RETRY_DELAY_SECONDS": "30",
+                },
+            ),
+            patch("advisor_service.llm_client.httpx.AsyncClient.post", post),
+            patch("advisor_service.llm_client.asyncio.sleep", sleep),
+        ):
+            response = asyncio.run(
+                chat_completions(
+                    "https://example.test/v1",
+                    "secret",
+                    {"model": "advisor", "messages": []},
+                )
+            )
+
+        self.assertEqual(response, {"choices": []})
+        self.assertEqual(post.await_count, 2)
+        sleep.assert_awaited_once_with(30.0)
+
+    def test_advisor_model_makes_three_retries_after_initial_timeout(self) -> None:
+        request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+        post = AsyncMock(
+            side_effect=[
+                httpx.ReadTimeout("timed out", request=request),
+                httpx.ReadTimeout("timed out", request=request),
+                httpx.ReadTimeout("timed out", request=request),
+                httpx.ReadTimeout("timed out", request=request),
+            ]
+        )
+        sleep = AsyncMock()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "EVAL_ADVISOR_TRANSIENT_RETRIES": "3",
+                    "EVAL_ADVISOR_RETRY_DELAY_SECONDS": "30",
+                },
+            ),
+            patch("advisor_service.llm_client.httpx.AsyncClient.post", post),
+            patch("advisor_service.llm_client.asyncio.sleep", sleep),
+        ):
+            with self.assertRaises(httpx.ReadTimeout):
+                asyncio.run(
+                    chat_completions(
+                        "https://example.test/v1",
+                        "secret",
+                        {"model": "advisor", "messages": []},
+                    )
+                )
+
+        self.assertEqual(post.await_count, 4)
+        self.assertEqual(sleep.await_count, 3)
+        self.assertEqual(
+            [call.args for call in sleep.await_args_list],
+            [(30.0,), (30.0,), (30.0,)],
+        )
+
+    def test_advisor_model_does_not_retry_non_transient_http_status(self) -> None:
+        request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+        post = AsyncMock(return_value=httpx.Response(400, request=request))
+        sleep = AsyncMock()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "EVAL_ADVISOR_TRANSIENT_RETRIES": "3",
+                    "EVAL_ADVISOR_RETRY_DELAY_SECONDS": "30",
+                },
+            ),
+            patch("advisor_service.llm_client.httpx.AsyncClient.post", post),
+            patch("advisor_service.llm_client.asyncio.sleep", sleep),
+        ):
+            with self.assertRaises(httpx.HTTPStatusError):
+                asyncio.run(
+                    chat_completions(
+                        "https://example.test/v1",
+                        "secret",
+                        {"model": "advisor", "messages": []},
+                    )
+                )
+
+        self.assertEqual(post.await_count, 1)
+        sleep.assert_not_awaited()
 
     def test_trace_endpoint_normalization(self) -> None:
         self.assertEqual(
@@ -306,6 +506,14 @@ class AdvisorServiceTests(unittest.TestCase):
             root
             / "containers/agents/opencode-advisory/advisory/intervention/openjev-policy.mjs"
         ).read_text(encoding="utf-8")
+        sii_policy = (
+            root
+            / "containers/agents/opencode-advisory/advisory/intervention/sii-decision-policy.mjs"
+        ).read_text(encoding="utf-8")
+        decision_client = (
+            root
+            / "containers/agents/opencode-advisory/advisory/intervention/decision-model-client.mjs"
+        ).read_text(encoding="utf-8")
         policy_config = (
             root
             / "containers/agents/opencode-advisory/advisory/intervention/policy-config.mjs"
@@ -330,14 +538,26 @@ class AdvisorServiceTests(unittest.TestCase):
             self.assertTrue(variable in dockerfile or variable in router)
         self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", compose)
         self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", runner)
-        self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", tool_source)
         self.assertIn("EVAL_ADVISOR_TIMEOUT_SECONDS", client_source)
+        for variable in (
+            "EVAL_ADVISOR_TRANSIENT_RETRIES",
+            "EVAL_ADVISOR_RETRY_DELAY_SECONDS",
+        ):
+            self.assertIn(variable, compose)
+            self.assertIn(variable, runner)
+            self.assertIn(variable, openjev_policy)
+            self.assertIn(variable, sii_policy)
+            self.assertIn(variable, client_source)
+        self.assertIn("advisor.decision_model.retry", decision_client)
+        self.assertNotIn("EVAL_ADVISOR_TRANSIENT_RETRIES", tool_source)
         self.assertIn("random-router.mjs", dockerfile)
         self.assertIn("platform advisor invocation requires", dockerfile)
         self.assertIn("openjev", dockerfile)
         for variable in (
             "OPENJEV_BASE_URL",
             "OPENJEV_API_KEY",
+            "SII_DECISION_BASE_URL",
+            "SII_DECISION_API_KEY",
             "EVAL_ADVISOR_OPENJEV_TIMEOUT_SECONDS",
             "EVAL_ADVISOR_OPENJEV_INTERVAL",
             "EVAL_ADVISOR_OPENJEV_POLICY_CONFIG",
@@ -346,6 +566,18 @@ class AdvisorServiceTests(unittest.TestCase):
             self.assertIn(variable, runner)
             self.assertIn(variable, router)
         self.assertIn("OpenJevInterventionPolicy", router)
+        for variable in (
+            "SII_DECISION_BASE_URL",
+            "SII_DECISION_API_KEY",
+            "EVAL_ADVISOR_SII_DECISION_TIMEOUT_SECONDS",
+            "EVAL_ADVISOR_SII_DECISION_INTERVAL",
+            "EVAL_ADVISOR_SII_DECISION_LOGPROBS",
+            "EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG",
+        ):
+            self.assertIn(variable, compose)
+            self.assertIn(variable, runner)
+            self.assertIn(variable, router)
+        self.assertIn("SiiDecisionInterventionPolicy", router)
         self.assertIn("parseAdvisorCallLimit", openjev_policy)
         self.assertIn("'unlimited', or omitted", policy_config)
         for variable in ("EVAL_ADVISOR_FIXED_TURN", "EVAL_ADVISOR_FIXED_INTERVAL"):
@@ -475,6 +707,8 @@ class AdvisorServiceTests(unittest.TestCase):
         self.assertIn("ADVISOR_API_KEY: ${ADVISOR_API_KEY:-none}", advisor_compose)
         self.assertIn("OPENJEV_BASE_URL: ${OPENJEV_BASE_URL:-}", advisor_compose)
         self.assertIn("OPENJEV_API_KEY: ${OPENJEV_API_KEY:-}", advisor_compose)
+        self.assertIn("SII_DECISION_BASE_URL: ${SII_DECISION_BASE_URL:-}", advisor_compose)
+        self.assertIn("SII_DECISION_API_KEY: ${SII_DECISION_API_KEY:-}", advisor_compose)
         self.assertNotIn("ADVISOR_BASE_URL=$OPENAI_API_BASE", env_example)
         self.assertNotIn("ADVISOR_API_KEY=$OPENAI_API_KEY", env_example)
 

@@ -87,39 +87,80 @@ async def advisory(request: AdvisoryRequest) -> AdvisoryResponse:
     return AdvisoryResponse(advice=advice)
 
 
-def _openjev_url(path: str) -> str:
-    base = config.OPENJEV_BASE_URL.rstrip("/")
+def _decision_model_url(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/")
     suffix = path.lstrip("/")
     if base.endswith("/v1") and suffix.startswith("v1/"):
         suffix = suffix.removeprefix("v1/")
     return f"{base}/{suffix}"
 
 
-@app.post("/openjev/{path:path}")
-async def openjev_proxy(path: str, request: Request) -> Response:
-    """Forward only OpenJEV classifier traffic through the egress-enabled sidecar."""
-    if not config.OPENJEV_BASE_URL or not config.OPENJEV_API_KEY:
-        raise HTTPException(status_code=503, detail="OpenJEV proxy configuration is incomplete")
+def _openjev_url(path: str) -> str:
+    return _decision_model_url(config.OPENJEV_BASE_URL, path)
+
+
+def _sii_decision_url(path: str) -> str:
+    return _decision_model_url(config.SII_DECISION_BASE_URL, path)
+
+
+async def _proxy_decision_model(
+    *,
+    name: str,
+    url: str,
+    api_key: str,
+    timeout_seconds: float,
+    request: Request,
+) -> Response:
+    if not url or not api_key:
+        raise HTTPException(status_code=503, detail=f"{name} proxy configuration is incomplete")
 
     try:
         async with httpx.AsyncClient() as client:
             upstream = await client.post(
-                _openjev_url(path),
+                url,
                 content=await request.body(),
                 headers={
-                    "authorization": f"Bearer {config.OPENJEV_API_KEY}",
+                    "authorization": f"Bearer {api_key}",
                     "content-type": request.headers.get("content-type", "application/json"),
                 },
-                timeout=config.OPENJEV_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
     except httpx.HTTPError as exc:
-        logger.error("OpenJEV proxy request failed: %s", type(exc).__name__)
-        raise HTTPException(status_code=502, detail="OpenJEV proxy request failed") from exc
+        logger.error("%s proxy request failed: %s", name, type(exc).__name__)
+        raise HTTPException(status_code=502, detail=f"{name} proxy request failed") from exc
 
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
         media_type=upstream.headers.get("content-type", "application/json"),
+    )
+
+
+@app.post("/openjev/{path:path}")
+async def openjev_proxy(path: str, request: Request) -> Response:
+    """Forward only OpenJEV classifier traffic through the egress-enabled sidecar."""
+    if not config.OPENJEV_BASE_URL:
+        raise HTTPException(status_code=503, detail="OpenJEV proxy configuration is incomplete")
+    return await _proxy_decision_model(
+        name="OpenJEV",
+        url=_openjev_url(path),
+        api_key=config.OPENJEV_API_KEY,
+        timeout_seconds=config.OPENJEV_TIMEOUT_SECONDS,
+        request=request,
+    )
+
+
+@app.post("/sii-decision/{path:path}")
+async def sii_decision_proxy(path: str, request: Request) -> Response:
+    """Forward only SII decision-model traffic through the egress-enabled sidecar."""
+    if not config.SII_DECISION_BASE_URL:
+        raise HTTPException(status_code=503, detail="sii-decision proxy configuration is incomplete")
+    return await _proxy_decision_model(
+        name="sii-decision",
+        url=_sii_decision_url(path),
+        api_key=config.SII_DECISION_API_KEY,
+        timeout_seconds=config.SII_DECISION_TIMEOUT_SECONDS,
+        request=request,
     )
 
 
