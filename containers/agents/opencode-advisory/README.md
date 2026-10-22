@@ -37,9 +37,10 @@ sandboxed execution bridges such as AppWorld.
 | `self-initiated` (default) | The executor sees the native `advisory` tool and chooses whether to call it. | None |
 | `random` | A deterministic per-turn draw is compared with a configured probability. | `EVAL_ADVISOR_RANDOM_PROBABILITY`, `EVAL_ADVISOR_RANDOM_SEED` |
 | `openjev` | OpenJEV classifies a bounded view of the current executor state as `call_advisor` or `continue_executor`. | `OPENJEV_BASE_URL`, `OPENJEV_API_KEY`; optional policy JSON |
+| `sii-decision` | SII Decision classifies a separately bounded executor state using completion-token log probabilities. | `SII_DECISION_BASE_URL`, `SII_DECISION_API_KEY`; optional policy JSON |
 | `fixed` | The platform selects one configured turn or a recurring turn interval. | Exactly one of `EVAL_ADVISOR_FIXED_TURN`, `EVAL_ADVISOR_FIXED_INTERVAL` |
 
-The three platform-initiated policies (`random`, `openjev`, and `fixed`) all
+The four platform-initiated policies (`random`, `openjev`, `sii-decision`, and `fixed`) all
 require `EVAL_ADVISOR_CONTEXT_MODE=full-session`. They deliberately reject an
 executor system-prompt addition and remove the `advisory` tool definition from
 requests forwarded to the executor model. The executor therefore neither sees
@@ -57,11 +58,10 @@ router performs the following sequence:
    synthetic assistant response containing an `advisory` tool call whose ID
    begins with `call_platform_advisor_`.
 4. OpenCode handles that response like any other tool request and executes the
-   existing native advisory tool. The tool calls the advisor sidecar and the
-   independently configured advisor model. The selected context snapshot is
-   retained under the synthetic call ID, so a retry of that tool call receives
-   the same snapshot; a missing snapshot is an error and never falls back to a
-   later live-session export.
+   existing native advisory tool. The tool independently exports the current
+   OpenCode session, constructs the standard advisor context, and calls the
+   separately configured advisor model. A decision model's input is never
+   reused as advisor input.
 5. OpenCode stores the synthetic assistant tool call and tool result in its
    session. Before each later executor request, the router removes that
    synthetic exchange. A successful advisor result is reinserted as a
@@ -154,6 +154,28 @@ experiment can override only the fields it needs. Set
 use the shared `EVAL_ADVISOR_MAX_CALLS` setting for a finite or unlimited
 advisor budget.
 
+### SII Decision policy
+
+SII Decision uses the same decision-context construction and compaction rules
+as OpenJEV, but calls a vLLM-compatible `/v1/completions` endpoint. It renders
+the checkpoint's ChatML decision prompt, requests one output token with
+log-probabilities, and compares the configured A/B labels. Exact prompt usage
+comes from `usage.prompt_tokens`; this includes SII's prompt wrapper in addition
+to the serialized decision state.
+
+`EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG` uses the same schema-2 state controls
+as OpenJEV. A complete editable configuration is in
+[`advisory/intervention/sii-decision-policy.example.json`](advisory/intervention/sii-decision-policy.example.json).
+Its `state.context.max_input_tokens` remains separately
+configurable because decision-model deployments may have different context
+limits. Context-overflow responses and token counts over that limit trigger the
+same complete-history-unit compaction. Initial system, developer, and user task
+messages and the final recent history unit remain protected.
+
+In Compose, SII requests use a narrow advisor-sidecar proxy just like OpenJEV;
+the isolated runner receives only a proxy URL and placeholder credential. The
+real SII endpoint and credential remain in the egress-enabled sidecar.
+
 ### Fixed policy
 
 Fixed mode uses the same platform protocol without a classifier or random draw.
@@ -184,7 +206,7 @@ The external-registry image names are:
 
 The last form is used by per-task benchmarks such as SWE-bench, with the task
 ID lowercased. Both the executor and advisor-sidecar services use the tagged
-`opencode-advisory` agent image. Random, OpenJEV, and fixed conditions may all
+`opencode-advisory` agent image. Random, OpenJEV, SII Decision, and fixed conditions may all
 reuse one platform-capable tag because the policy is selected at runtime. An
 old self-initiated image does not gain these policies from configuration alone;
 the agent and relevant combined/per-task eval images must first be built under
@@ -270,10 +292,10 @@ not expose its built-in base system prompt to custom tools, so only the
 configured executor addition can be included.
 
 In `full-session` mode this serialization path is identical for every advisor
-invocation policy: self-initiated, random, fixed, and OpenJEV. OpenJEV builds a
-separate classifier state according to `state.input_mode`; that state is used
-only to decide whether to call the advisor and is never forwarded as the
-advisor's context.
+invocation policy: self-initiated, random, fixed, OpenJEV, and SII Decision.
+Decision-model policies build a separate state according to `state.input_mode`;
+that state is used only to decide whether to call the advisor and is never
+forwarded as the advisor's context.
 
 `--advisor-full-context-max-bytes <n>` sets a serialized byte limit. A value of
 `0` means unlimited. Exceeding a nonzero limit fails the tool call explicitly;
@@ -290,8 +312,10 @@ Service settings remain separate from experimental text:
 | `ADVISORY_EXPERIMENT_ID` / `--experiment-id` | Experiment label attached to advisor spans |
 | `EVAL_ADVISOR_CONTEXT_MODE` / `--advisor-context-mode` | `agent-provided` or `full-session` |
 | `EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES` / `--advisor-full-context-max-bytes` | Full-session size limit; `0` is unlimited |
-| `EVAL_ADVISOR_TIMEOUT_SECONDS` / `--advisor-timeout-seconds` | Advisor service and tool request timeout; default `300` |
-| `EVAL_ADVISOR_INVOCATION_POLICY` / `--advisor-invocation-policy` | `self-initiated`, `random`, `openjev`, or `fixed` |
+| `EVAL_ADVISOR_TIMEOUT_SECONDS` / `--advisor-timeout-seconds` | Per-attempt timeout for the configured advisor endpoint; default `300` |
+| `EVAL_ADVISOR_TRANSIENT_RETRIES` / `--advisor-transient-retries` | Additional attempts for transient advisor or decision-model connection, timeout, 408, 429, 502, 503, and 504 failures; default `3` |
+| `EVAL_ADVISOR_RETRY_DELAY_SECONDS` / `--advisor-retry-delay-seconds` | Delay between transient advisor or decision-model retries; default `30` |
+| `EVAL_ADVISOR_INVOCATION_POLICY` / `--advisor-invocation-policy` | `self-initiated`, `random`, `openjev`, `sii-decision`, or `fixed` |
 | `EVAL_ADVISOR_RANDOM_PROBABILITY` / `--advisor-random-probability` | Random selection probability from `0` to `1` |
 | `EVAL_ADVISOR_MAX_CALLS` / `--advisor-max-calls` | Optional positive platform-call cap; omitted or `unlimited` means no cap |
 | `EVAL_ADVISOR_RANDOM_SEED` / `--advisor-random-seed` | Deterministic experiment seed |
@@ -301,6 +325,13 @@ Service settings remain separate from experimental text:
 | `EVAL_ADVISOR_OPENJEV_INTERVAL` / `--advisor-openjev-interval` | Classify every N eligible executor turns; default `1` |
 | `EVAL_ADVISOR_OPENJEV_POLICY_CONFIG` / `--advisor-openjev-policy-config` | Resolved OpenJev decision-policy JSON |
 | `--advisor-openjev-policy-config-file` | Host JSON file resolved into the policy configuration |
+| `SII_DECISION_BASE_URL` / `--sii-decision-base-url` | Authenticated SII Decision vLLM base URL |
+| `SII_DECISION_API_KEY` | SII Decision bearer token; environment only |
+| `EVAL_ADVISOR_SII_DECISION_TIMEOUT_SECONDS` / `--advisor-sii-decision-timeout-seconds` | SII Decision classification timeout; default `30` |
+| `EVAL_ADVISOR_SII_DECISION_INTERVAL` / `--advisor-sii-decision-interval` | Classify every N eligible executor turns; default `1` |
+| `EVAL_ADVISOR_SII_DECISION_LOGPROBS` / `--advisor-sii-decision-logprobs` | Number of top completion-token log probabilities requested; `2` to `256`, default `20` |
+| `EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG` / `--advisor-sii-decision-policy-config` | Resolved SII Decision policy JSON |
+| `--advisor-sii-decision-policy-config-file` | Host JSON file resolved into the SII Decision policy configuration |
 | `EVAL_ADVISOR_FIXED_TURN` / `--advisor-fixed-turn` | Make one platform advisor call at eligible executor turn Y |
 | `EVAL_ADVISOR_FIXED_INTERVAL` / `--advisor-fixed-interval` | Make a platform advisor call every X eligible executor turns |
 | `EVAL_EXECUTOR_MAX_TURNS` / `--executor-max-turns` | Optional eligible executor-turn cap; `0` means unlimited |
@@ -314,7 +345,7 @@ Do not commit credentials or installation-specific endpoints. See
 [`advisory/service/.env.example`](advisory/service/.env.example) for safe
 placeholders.
 
-The executor, advisor, and optional OpenJEV classifier configurations are
+The executor, advisor, and optional decision-model configurations are
 independent. Put the values needed by the selected policy in the repository
 `.env` when using this agent:
 
@@ -325,13 +356,15 @@ ADVISOR_BASE_URL=https://advisor.example.com/v1
 ADVISOR_API_KEY=replace-with-advisor-key
 OPENJEV_BASE_URL=https://openjev.example.com
 OPENJEV_API_KEY=replace-with-openjev-key
+SII_DECISION_BASE_URL=https://sii-decision.example.com/v1
+SII_DECISION_API_KEY=replace-with-sii-decision-key
 ```
 
 The `OPENAI_*` pair is passed only to the normal executor gateway, while the
-`ADVISOR_*` pair configures advisor inference and the `OPENJEV_*` pair
-configures classification. The pairs may contain related values, but none
-falls back to another. OpenJEV settings are required only when the invocation
-policy is `openjev`.
+`ADVISOR_*` pair configures advisor inference, while `OPENJEV_*` and
+`SII_DECISION_*` configure their respective decision models. The pairs may
+contain related values, but none falls back to another. Decision-model settings
+are required only when their matching invocation policy is selected.
 
 ## Tracing
 

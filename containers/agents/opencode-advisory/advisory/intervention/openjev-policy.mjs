@@ -7,6 +7,13 @@ import {
   classifierStateMetadata,
   compactClassifierStateForRetry,
 } from "./classifier-context.mjs"
+import {
+  isContextOverflow,
+  nonNegativeInteger,
+  requestDecisionModel,
+  responseError,
+  sleep,
+} from "./decision-model-client.mjs"
 import { parseAdvisorCallLimit, parseOptionalPositiveInteger } from "./policy-config.mjs"
 
 export { parseAdvisorCallLimit } from "./policy-config.mjs"
@@ -189,35 +196,27 @@ function classifierError(error, latencyMs, contextMetadata) {
       ...(causeName ? { error_cause: causeName } : {}),
       ...(causeMessage ? { error_cause_message: causeMessage } : {}),
       ...(Number.isSafeInteger(error.status) ? { http_status: error.status } : {}),
+      ...(Number.isSafeInteger(error.transientRetries) ? { transient_retries: error.transientRetries } : {}),
       latency_ms: latencyMs,
       ...contextMetadata,
     },
   }
 }
 
-function responseError(body) {
-  return body?.error && typeof body.error === "object" ? body.error : {}
-}
-
-function isContextOverflow(response, body) {
-  const error = responseError(body)
-  const code = String(error.code || error.type || "").toLowerCase()
-  const message = String(error.message || "").toLowerCase()
-  return response.status === 413 || code.includes("context") || message.includes("context length")
-}
-
-async function responseBody(response) {
-  const text = await response.text()
-  if (!text) return {}
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { error: { message: text.slice(0, 500) } }
-  }
-}
-
 export class OpenJevInterventionPolicy {
-  constructor({ baseURL, apiKey, timeoutSeconds = 30, interval = 1, maxCalls, maxTurns = 0, policyConfig = "", fetchImpl = fetch }) {
+  constructor({
+    baseURL,
+    apiKey,
+    timeoutSeconds = 30,
+    interval = 1,
+    maxCalls,
+    maxTurns = 0,
+    policyConfig = "",
+    transientRetries = process.env.EVAL_ADVISOR_TRANSIENT_RETRIES || 3,
+    retryDelaySeconds = process.env.EVAL_ADVISOR_RETRY_DELAY_SECONDS || 30,
+    fetchImpl = fetch,
+    sleepImpl = sleep,
+  }) {
     requireString(baseURL, "OPENJEV_BASE_URL")
     requireString(apiKey, "OPENJEV_API_KEY")
     if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > 86400) {
@@ -236,9 +235,12 @@ export class OpenJevInterventionPolicy {
     }
     this.maxCalls = parseAdvisorCallLimit(maxCalls)
     this.maxTurns = maxTurns
+    this.transientRetries = nonNegativeInteger(transientRetries, "EVAL_ADVISOR_TRANSIENT_RETRIES")
+    this.retryDelaySeconds = nonNegativeInteger(retryDelaySeconds, "EVAL_ADVISOR_RETRY_DELAY_SECONDS")
     this.config = parseOpenJevPolicyConfig(policyConfig)
     this.configSha256 = crypto.createHash("sha256").update(JSON.stringify(this.config)).digest("hex")
     this.fetchImpl = fetchImpl
+    this.sleepImpl = sleepImpl
     this.eligibleTurns = 0
     this.calls = 0
     this.forceExecutorNext = false
@@ -253,8 +255,24 @@ export class OpenJevInterventionPolicy {
       max_turns: this.maxTurns,
       interval: this.interval,
       max_input_tokens: this.config.state.context.max_input_tokens,
+      transient_retries: this.transientRetries,
+      retry_delay_seconds: this.retryDelaySeconds,
       policy_config_sha256: this.configSha256,
     }
+  }
+
+  async requestClassifier(payload) {
+    return requestDecisionModel({
+      url: this.url,
+      apiKey: this.apiKey,
+      payload,
+      target: "openjev",
+      timeoutSeconds: this.timeoutSeconds,
+      transientRetries: this.transientRetries,
+      retryDelaySeconds: this.retryDelaySeconds,
+      fetchImpl: this.fetchImpl,
+      sleepImpl: this.sleepImpl,
+    })
   }
 
   async decide(request) {
@@ -292,24 +310,19 @@ export class OpenJevInterventionPolicy {
       let body
       let inputTokens
       let compactionAttempts = 0
+      let transientRetriesUsed = 0
       const previousInputTokens = this.lastInputTokens
       while (true) {
-        const response = await this.fetchImpl(this.url, {
-          method: "POST",
-          signal: AbortSignal.timeout(this.timeoutSeconds * 1000),
-          headers: {
-            authorization: `Bearer ${this.apiKey}`,
-            "content-type": "application/json",
+        const result = await this.requestClassifier({
+          model: this.config.request.model,
+          state,
+          questions: {
+            [this.config.request.question_name]: this.config.request.question,
           },
-          body: JSON.stringify({
-            model: this.config.request.model,
-            state,
-            questions: {
-              [this.config.request.question_name]: this.config.request.question,
-            },
-          }),
         })
-        body = await responseBody(response)
+        const { response } = result
+        body = result.body
+        transientRetriesUsed += result.transientRetries
         if (!response.ok) {
           const contextOverflow = isContextOverflow(response, body)
           const compacted = contextOverflow
@@ -328,6 +341,7 @@ export class OpenJevInterventionPolicy {
           const error = new Error(`OpenJev returned HTTP ${response.status}${detail ? `: ${detail}` : ""}`)
           error.name = contextOverflow ? "OpenJevContextUnavailableError" : "OpenJevHTTPError"
           error.status = response.status
+          error.transientRetries = transientRetriesUsed
           throw error
         }
         inputTokens = body?.usage?.input_tokens
@@ -379,6 +393,7 @@ export class OpenJevInterventionPolicy {
           max_input_tokens: this.config.state.context.max_input_tokens,
           previous_input_tokens: previousInputTokens,
           compaction_attempts: compactionAttempts,
+          transient_retries: transientRetriesUsed,
           latency_ms: Date.now() - started,
           ...classifierStateMetadata(state, {
             ...context.metadata,

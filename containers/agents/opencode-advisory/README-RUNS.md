@@ -193,14 +193,17 @@ Built-in tool description plus default advisor system prompt:
 ### Platform-initiated call lifecycle
 
 `self-initiated` is the default: the executor sees the native `advisory` tool
-and decides when to call it. `random`, `openjev`, and `fixed` move that decision
-to the platform. All three platform policies require `full-session` context and
-must run without an executor system-prompt addition.
+and decides when to call it. `random`, `openjev`, `sii-decision`, and `fixed`
+move that decision to the platform. All platform policies require
+`full-session` advisor context and must run without an executor system-prompt
+addition.
 
 On a selected turn, the local router bypasses the executor model and returns a
 synthetic assistant `advisory` tool call to OpenCode. OpenCode executes the
 normal advisory tool, so the advisor sidecar, tracing, and persisted tool
-exchange remain unchanged. On later executor requests, the router removes the
+exchange remain unchanged. The advisor independently receives the configured
+advisor context; a decision model's classifier input is never reused as advisor
+context. On later executor requests, the router removes the
 synthetic call/result pair and converts successful advice into a platform
 `system` message. Failed advice is omitted from executor context. Every selected
 attempt consumes the call budget, and the next eligible request is forced to be
@@ -350,6 +353,47 @@ self-initiated, random, and fixed platform calls. Changing `state.input_mode`
 therefore changes only OpenJEV's decision input; it never changes the context
 sent to the advisor. A selected advisor attempt consumes the budget even if the
 downstream advisor later times out or fails.
+
+### SII Decision selection
+
+SII Decision uses the same separately bounded decision state and complete-unit
+compaction as OpenJEV, but calls an OpenAI-compatible `/v1/completions`
+endpoint. It compares the model's A/B completion-token log probabilities and
+uses `usage.prompt_tokens` for exact budget enforcement. Its token limit is
+independently configurable because the SII deployment can support a different
+context size than OpenJEV.
+
+```bash
+: "${SII_DECISION_BASE_URL:?missing SII_DECISION_BASE_URL}"
+: "${SII_DECISION_API_KEY:?missing SII_DECISION_API_KEY}"
+
+SII_POLICY_FILE=containers/agents/opencode-advisory/advisory/intervention/sii-decision-policy.example.json
+
+./target/release/eval-containers run swe-bench \
+  --task-id "$SWE_BENCH_TASK_ID" \
+  --agent opencode-advisory \
+  --model "$EXECUTOR_MODEL" \
+  --gateway-image litellm \
+  --advisor-model "$ADVISOR_MODEL" \
+  --advisor-base-url "$ADVISOR_BASE_URL" \
+  --advisor-context-mode full-session \
+  --advisor-invocation-policy sii-decision \
+  --sii-decision-base-url "$SII_DECISION_BASE_URL" \
+  --advisor-sii-decision-policy-config-file "$SII_POLICY_FILE" \
+  --advisor-sii-decision-timeout-seconds 30 \
+  --advisor-sii-decision-interval 1 \
+  --advisor-sii-decision-logprobs 20 \
+  --advisor-max-calls unlimited \
+  --experiment-id sii-decision-v1 \
+  --agent-tag "$IMAGE_TAG" \
+  --local --timeout 1800
+```
+
+The real SII endpoint and credential are held by the egress-enabled advisor
+sidecar; the isolated runner receives its internal proxy URL and a placeholder
+credential. SII's decision state is never reused as advisor input. When SII
+selects a call, the advisory tool independently exports the same standard
+full-session context used by every other invocation policy.
 
 ### Fixed scheduling
 

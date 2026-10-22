@@ -214,6 +214,7 @@ test("classifier transport errors retain their message and nested cause", async 
     baseURL: "http://openjev-svc.wrong.svc.cluster.local:3000",
     apiKey: "token",
     maxCalls: "unlimited",
+    transientRetries: 0,
     fetchImpl: async () => { throw transportError },
   })
   const decision = await policy.decide(executorRequest())
@@ -224,6 +225,63 @@ test("classifier transport errors retain their message and nested cause", async 
   assert.equal(decision.classifier.error_cause, "DNSError")
   assert.match(decision.classifier.error_cause_message, /ENOTFOUND openjev-svc\.wrong/)
   assert.equal(policy.calls, 0)
+})
+
+test("retries transient classifier transport failures three times", async () => {
+  let requests = 0
+  const delays = []
+  const policy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    transientRetries: 3,
+    retryDelaySeconds: 30,
+    sleepImpl: async (milliseconds) => { delays.push(milliseconds) },
+    fetchImpl: async () => {
+      requests += 1
+      if (requests < 4) throw new TypeError("fetch failed")
+      return response("continue_executor")
+    },
+  })
+  const decision = await policy.decide(executorRequest())
+  assert.equal(decision.reason, "openjev-choice")
+  assert.equal(decision.classifier.transient_retries, 3)
+  assert.equal(requests, 4)
+  assert.deepEqual(delays, [30000, 30000, 30000])
+})
+
+test("retries transient classifier HTTP statuses but not permanent errors", async () => {
+  let transientRequests = 0
+  const transientPolicy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    transientRetries: 3,
+    retryDelaySeconds: 30,
+    sleepImpl: async () => {},
+    fetchImpl: async () => {
+      transientRequests += 1
+      return transientRequests < 3
+        ? new Response("gateway timeout", { status: 504 })
+        : response("continue_executor")
+    },
+  })
+  const transientDecision = await transientPolicy.decide(executorRequest())
+  assert.equal(transientDecision.classifier.transient_retries, 2)
+  assert.equal(transientRequests, 3)
+
+  let permanentRequests = 0
+  const permanentPolicy = new OpenJevInterventionPolicy({
+    baseURL: "http://openjev.invalid:3000",
+    apiKey: "token",
+    transientRetries: 3,
+    retryDelaySeconds: 0,
+    fetchImpl: async () => {
+      permanentRequests += 1
+      return new Response("unauthorized", { status: 401 })
+    },
+  })
+  const permanentDecision = await permanentPolicy.decide(executorRequest())
+  assert.equal(permanentDecision.reason, "openjev-error")
+  assert.equal(permanentRequests, 1)
 })
 
 test("classifier state preserves the complete initial prompt without byte or character truncation", () => {

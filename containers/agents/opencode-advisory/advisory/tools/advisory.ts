@@ -1,6 +1,8 @@
 import { tool } from "@opencode-ai/plugin"
 import { spawn } from "child_process"
 import fs from "fs"
+import { request as httpRequest } from "http"
+import { request as httpsRequest } from "https"
 import os from "os"
 import path from "path"
 // @ts-ignore This absolute path is populated by the agent image.
@@ -73,18 +75,6 @@ function fullContextMaxBytes(): number {
   return value
 }
 
-function advisorTimeoutMilliseconds(): number {
-  const raw = (process.env.EVAL_ADVISOR_TIMEOUT_SECONDS || "300").trim()
-  if (!/^\d+$/.test(raw)) {
-    throw new Error("EVAL_ADVISOR_TIMEOUT_SECONDS must be an integer from 1 to 86400")
-  }
-  const value = Number(raw)
-  if (!Number.isSafeInteger(value) || value <= 0 || value > 86400) {
-    throw new Error("EVAL_ADVISOR_TIMEOUT_SECONDS must be an integer from 1 to 86400")
-  }
-  return value * 1000
-}
-
 async function exportSession(sessionID: string, directory: string): Promise<unknown> {
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-advisory-"))
   const outputPath = path.join(temporaryDirectory, "session.json")
@@ -114,33 +104,55 @@ async function exportSession(sessionID: string, directory: string): Promise<unkn
   }
 }
 
-async function requestAdvice(request: string, context: string): Promise<string> {
+async function postJson(url: string, payload: unknown): Promise<{
+  statusCode: number
+  body: string
+}> {
+  const target = new URL(url)
+  const body = JSON.stringify(payload)
+  const request = target.protocol === "https:" ? httpsRequest : httpRequest
+
+  return new Promise((resolve, reject) => {
+    const req = request(target, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = []
+      res.on("data", (chunk) => chunks.push(Buffer.from(chunk)))
+      res.once("error", reject)
+      res.once("end", () => resolve({
+        statusCode: res.statusCode ?? 0,
+        body: Buffer.concat(chunks).toString("utf8"),
+      }))
+    })
+    req.once("error", reject)
+    req.end(body)
+  })
+}
+
+export async function requestAdvice(advisorRequest: string, context: string): Promise<string> {
   const gateway = (process.env.ADVISORY_GATEWAY_URL || "http://advisor:8001").replace(/\/$/, "")
   const experimentId = process.env.ADVISORY_EXPERIMENT_ID || null
 
-  const res = await fetch(`${gateway}/advisory`, {
-    method: "POST",
-    signal: AbortSignal.timeout(advisorTimeoutMilliseconds()),
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      request,
-      context,
-      experiment_id: experimentId,
-      harness: "opencode-eval-containers",
-      description_variant: resolvedDescription.variant,
-    }),
-  })
-
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Advisory service returned HTTP ${res.status}: ${body}`)
+  const payload = {
+    request: advisorRequest,
+    context,
+    experiment_id: experimentId,
+    harness: "opencode-eval-containers",
+    description_variant: resolvedDescription.variant,
   }
-
-  const parsed = await res.json()
-  if (!parsed.advice || typeof parsed.advice !== "string" || !parsed.advice.trim()) {
-    throw new Error(`Advisory service returned no advice: ${JSON.stringify(parsed)}`)
+  const response = await postJson(`${gateway}/advisory`, payload)
+  if (response.statusCode >= 200 && response.statusCode < 300) {
+    const parsed = JSON.parse(response.body)
+    if (!parsed.advice || typeof parsed.advice !== "string" || !parsed.advice.trim()) {
+      throw new Error(`Advisory service returned no advice: ${JSON.stringify(parsed)}`)
+    }
+    return parsed.advice.trim()
   }
-  return parsed.advice.trim()
+  throw new Error(`Advisory service returned HTTP ${response.statusCode}: ${response.body}`)
 }
 
 type AdvisoryToolContext = {

@@ -158,7 +158,15 @@ pub struct RunArgs {
     #[arg(long)]
     advisor_timeout_seconds: Option<u32>,
 
-    /// Advisor invocation policy: self-initiated (default), random, openjev, or fixed.
+    /// Retries for transient decision-model and advisor transport failures, from 0 to 100.
+    #[arg(long)]
+    advisor_transient_retries: Option<u32>,
+
+    /// Delay between transient decision-model and advisor retries, from 0 to 86400 seconds.
+    #[arg(long)]
+    advisor_retry_delay_seconds: Option<u32>,
+
+    /// Advisor invocation policy: self-initiated (default), random, openjev, fixed, or sii-decision.
     #[arg(long)]
     advisor_invocation_policy: Option<String>,
 
@@ -201,6 +209,30 @@ pub struct RunArgs {
     /// Make a platform advisor call every N eligible executor turns.
     #[arg(long)]
     advisor_fixed_interval: Option<u32>,
+
+    /// sii-decision-27b vLLM base URL.
+    #[arg(long)]
+    sii_decision_base_url: Option<String>,
+
+    /// sii-decision classifier timeout in seconds, from 1 to 86400.
+    #[arg(long)]
+    advisor_sii_decision_timeout_seconds: Option<u32>,
+
+    /// Ask sii-decision every N eligible executor turns; defaults to 1.
+    #[arg(long)]
+    advisor_sii_decision_interval: Option<u32>,
+
+    /// Number of top completion-token log probabilities requested from SII Decision, from 2 to 256.
+    #[arg(long)]
+    advisor_sii_decision_logprobs: Option<u32>,
+
+    /// sii-decision policy configuration as inline JSON.
+    #[arg(long)]
+    advisor_sii_decision_policy_config: Option<String>,
+
+    /// Read the sii-decision policy configuration from a host JSON file.
+    #[arg(long)]
+    advisor_sii_decision_policy_config_file: Option<PathBuf>,
 
     /// Maximum eligible executor turns; 0 means unlimited.
     #[arg(long)]
@@ -358,12 +390,31 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
     if let Some(document) = openjev_policy_config.as_ref() {
         validate_openjev_policy_config(document)?;
     }
+    let sii_decision_policy_config = resolve_text_source(
+        "sii-decision policy configuration",
+        args.advisor_sii_decision_policy_config.as_ref(),
+        args.advisor_sii_decision_policy_config_file.as_ref(),
+    )?;
+    if let Some(document) = sii_decision_policy_config.as_ref() {
+        validate_sii_decision_policy_config(document)?;
+    }
     validate_advisor_context_mode(args.advisor_context_mode.as_deref())?;
     validate_advisor_timeout(args.advisor_timeout_seconds)?;
     validate_advisor_timeout(args.advisor_openjev_timeout_seconds)?;
+    validate_advisor_timeout(args.advisor_sii_decision_timeout_seconds)?;
+    if args
+        .advisor_sii_decision_logprobs
+        .is_some_and(|value| !(2..=256).contains(&value))
+    {
+        return Err("advisor sii-decision logprobs must be between 2 and 256".into());
+    }
+    validate_retry_options(
+        args.advisor_transient_retries,
+        args.advisor_retry_delay_seconds,
+    )?;
     if matches!(
         args.advisor_invocation_policy.as_deref(),
-        Some("random" | "openjev" | "fixed")
+        Some("random" | "openjev" | "fixed" | "sii-decision")
     ) && (executor_system_prompt.is_some() || args.executor_system_prompt_variant.is_some())
     {
         return Err(
@@ -382,6 +433,11 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
         openjev_interval: args.advisor_openjev_interval,
         fixed_turn: args.advisor_fixed_turn,
         fixed_interval: args.advisor_fixed_interval,
+        sii_decision_base_url: args.sii_decision_base_url.as_deref(),
+        sii_decision_policy_config: sii_decision_policy_config.as_deref(),
+        sii_decision_timeout_seconds: args.advisor_sii_decision_timeout_seconds,
+        sii_decision_interval: args.advisor_sii_decision_interval,
+        sii_decision_logprobs: args.advisor_sii_decision_logprobs,
     })?;
     let advisor_options_supplied = args.advisor_tool_description_variant.is_some()
         || advisor_tool_description.is_some()
@@ -396,6 +452,8 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
         || args.advisor_context_mode.is_some()
         || args.advisor_full_context_max_bytes.is_some()
         || args.advisor_timeout_seconds.is_some()
+        || args.advisor_transient_retries.is_some()
+        || args.advisor_retry_delay_seconds.is_some()
         || args.advisor_invocation_policy.is_some()
         || args.advisor_random_probability.is_some()
         || args.advisor_max_calls.is_some()
@@ -406,6 +464,11 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
         || openjev_policy_config.is_some()
         || args.advisor_fixed_turn.is_some()
         || args.advisor_fixed_interval.is_some()
+        || args.sii_decision_base_url.is_some()
+        || args.advisor_sii_decision_timeout_seconds.is_some()
+        || args.advisor_sii_decision_interval.is_some()
+        || args.advisor_sii_decision_logprobs.is_some()
+        || sii_decision_policy_config.is_some()
         || args.executor_max_turns.is_some()
         || args.experiment_id.is_some();
     validate_advisor_scope(&agent, &args.mode, advisor_options_supplied)?;
@@ -471,6 +534,12 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
     if let Some(value) = args.advisor_timeout_seconds {
         envs.push(("EVAL_ADVISOR_TIMEOUT_SECONDS", value.to_string()));
     }
+    if let Some(value) = args.advisor_transient_retries {
+        envs.push(("EVAL_ADVISOR_TRANSIENT_RETRIES", value.to_string()));
+    }
+    if let Some(value) = args.advisor_retry_delay_seconds {
+        envs.push(("EVAL_ADVISOR_RETRY_DELAY_SECONDS", value.to_string()));
+    }
     push_optional(
         &mut envs,
         "EVAL_ADVISOR_INVOCATION_POLICY",
@@ -505,6 +574,28 @@ pub fn execute(registry: &str, args: RunArgs) -> Result<(), String> {
     if let Some(value) = args.advisor_fixed_interval {
         envs.push(("EVAL_ADVISOR_FIXED_INTERVAL", value.to_string()));
     }
+    push_optional(
+        &mut envs,
+        "SII_DECISION_BASE_URL",
+        &args.sii_decision_base_url,
+    );
+    if let Some(value) = args.advisor_sii_decision_timeout_seconds {
+        envs.push((
+            "EVAL_ADVISOR_SII_DECISION_TIMEOUT_SECONDS",
+            value.to_string(),
+        ));
+    }
+    if let Some(value) = args.advisor_sii_decision_interval {
+        envs.push(("EVAL_ADVISOR_SII_DECISION_INTERVAL", value.to_string()));
+    }
+    if let Some(value) = args.advisor_sii_decision_logprobs {
+        envs.push(("EVAL_ADVISOR_SII_DECISION_LOGPROBS", value.to_string()));
+    }
+    push_optional(
+        &mut envs,
+        "EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG",
+        &sii_decision_policy_config,
+    );
     if let Some(value) = args.executor_max_turns {
         envs.push(("EVAL_EXECUTOR_MAX_TURNS", value.to_string()));
     }
@@ -660,6 +751,16 @@ fn validate_advisor_timeout(value: Option<u32>) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_retry_options(retries: Option<u32>, delay_seconds: Option<u32>) -> Result<(), String> {
+    if retries.is_some_and(|value| value > 100) {
+        return Err("advisor transient retries must be between 0 and 100".into());
+    }
+    if delay_seconds.is_some_and(|value| value > 86400) {
+        return Err("advisor retry delay seconds must be between 0 and 86400".into());
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct AdvisorInvocationOptions<'a> {
     policy: Option<&'a str>,
@@ -673,6 +774,11 @@ struct AdvisorInvocationOptions<'a> {
     openjev_interval: Option<u32>,
     fixed_turn: Option<u32>,
     fixed_interval: Option<u32>,
+    sii_decision_base_url: Option<&'a str>,
+    sii_decision_policy_config: Option<&'a str>,
+    sii_decision_timeout_seconds: Option<u32>,
+    sii_decision_interval: Option<u32>,
+    sii_decision_logprobs: Option<u32>,
 }
 
 fn validate_advisor_invocation(options: AdvisorInvocationOptions<'_>) -> Result<(), String> {
@@ -688,11 +794,19 @@ fn validate_advisor_invocation(options: AdvisorInvocationOptions<'_>) -> Result<
         openjev_interval,
         fixed_turn,
         fixed_interval,
+        sii_decision_base_url,
+        sii_decision_policy_config,
+        sii_decision_timeout_seconds,
+        sii_decision_interval,
+        sii_decision_logprobs,
     } = options;
     let policy = policy.unwrap_or("self-initiated");
-    if !matches!(policy, "self-initiated" | "random" | "openjev" | "fixed") {
+    if !matches!(
+        policy,
+        "self-initiated" | "random" | "openjev" | "fixed" | "sii-decision"
+    ) {
         return Err(
-            "advisor invocation policy must be 'self-initiated', 'random', 'openjev', or 'fixed'"
+            "advisor invocation policy must be 'self-initiated', 'random', 'openjev', 'fixed', or 'sii-decision'"
                 .into(),
         );
     }
@@ -709,9 +823,14 @@ fn validate_advisor_invocation(options: AdvisorInvocationOptions<'_>) -> Result<
             || openjev_interval.is_some()
             || fixed_turn.is_some()
             || fixed_interval.is_some()
+            || sii_decision_base_url.is_some()
+            || sii_decision_policy_config.is_some()
+            || sii_decision_timeout_seconds.is_some()
+            || sii_decision_interval.is_some()
+            || sii_decision_logprobs.is_some()
         {
             return Err(
-                "platform advisor options require --advisor-invocation-policy random, openjev, or fixed"
+                "platform advisor options require --advisor-invocation-policy random, openjev, fixed, or sii-decision"
                     .into(),
             );
         }
@@ -733,6 +852,16 @@ fn validate_advisor_invocation(options: AdvisorInvocationOptions<'_>) -> Result<
         if fixed_turn.is_some() || fixed_interval.is_some() {
             return Err("fixed advisor options require --advisor-invocation-policy fixed".into());
         }
+        if sii_decision_base_url.is_some()
+            || sii_decision_policy_config.is_some()
+            || sii_decision_timeout_seconds.is_some()
+            || sii_decision_interval.is_some()
+            || sii_decision_logprobs.is_some()
+        {
+            return Err(
+                "sii-decision options require --advisor-invocation-policy sii-decision".into(),
+            );
+        }
         let probability = probability.ok_or_else(|| {
             "random advisor invocation requires --advisor-random-probability".to_string()
         })?;
@@ -752,8 +881,38 @@ fn validate_advisor_invocation(options: AdvisorInvocationOptions<'_>) -> Result<
         if fixed_turn.is_some() || fixed_interval.is_some() {
             return Err("fixed advisor options require --advisor-invocation-policy fixed".into());
         }
+        if sii_decision_base_url.is_some()
+            || sii_decision_policy_config.is_some()
+            || sii_decision_timeout_seconds.is_some()
+            || sii_decision_interval.is_some()
+            || sii_decision_logprobs.is_some()
+        {
+            return Err(
+                "sii-decision options require --advisor-invocation-policy sii-decision".into(),
+            );
+        }
         if openjev_interval == Some(0) {
             return Err("advisor OpenJev interval must be greater than 0".into());
+        }
+        return Ok(());
+    }
+
+    if policy == "sii-decision" {
+        if probability.is_some() || seed.is_some() {
+            return Err("random advisor options require --advisor-invocation-policy random".into());
+        }
+        if fixed_turn.is_some() || fixed_interval.is_some() {
+            return Err("fixed advisor options require --advisor-invocation-policy fixed".into());
+        }
+        if openjev_base_url.is_some()
+            || openjev_policy_config.is_some()
+            || openjev_timeout_seconds.is_some()
+            || openjev_interval.is_some()
+        {
+            return Err("OpenJev options require --advisor-invocation-policy openjev".into());
+        }
+        if sii_decision_interval == Some(0) {
+            return Err("advisor sii-decision interval must be greater than 0".into());
         }
         return Ok(());
     }
@@ -767,6 +926,14 @@ fn validate_advisor_invocation(options: AdvisorInvocationOptions<'_>) -> Result<
         || openjev_interval.is_some()
     {
         return Err("OpenJev options require --advisor-invocation-policy openjev".into());
+    }
+    if sii_decision_base_url.is_some()
+        || sii_decision_policy_config.is_some()
+        || sii_decision_timeout_seconds.is_some()
+        || sii_decision_interval.is_some()
+        || sii_decision_logprobs.is_some()
+    {
+        return Err("sii-decision options require --advisor-invocation-policy sii-decision".into());
     }
     if fixed_turn.is_some() == fixed_interval.is_some() {
         return Err(
@@ -790,8 +957,26 @@ fn validate_openjev_policy_config(document: &str) -> Result<(), String> {
     let object = value
         .as_object()
         .ok_or_else(|| "OpenJev policy configuration must be a JSON object".to_string())?;
-    if object.get("schema_version").and_then(Value::as_u64) != Some(1) {
-        return Err("OpenJev policy configuration schema_version must be 1".into());
+    if !matches!(
+        object.get("schema_version").and_then(Value::as_u64),
+        Some(1 | 2)
+    ) {
+        return Err("OpenJev policy configuration schema_version must be 1 or 2".into());
+    }
+    Ok(())
+}
+
+fn validate_sii_decision_policy_config(document: &str) -> Result<(), String> {
+    let value: Value = serde_json::from_str(document)
+        .map_err(|e| format!("sii-decision policy configuration is not valid JSON: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "sii-decision policy configuration must be a JSON object".to_string())?;
+    if !matches!(
+        object.get("schema_version").and_then(Value::as_u64),
+        Some(1 | 2)
+    ) {
+        return Err("sii-decision policy configuration schema_version must be 1 or 2".into());
     }
     Ok(())
 }
@@ -862,6 +1047,8 @@ fn prepare_output_dir(
         "EVAL_ADVISOR_CONTEXT_MODE",
         "EVAL_ADVISOR_FULL_CONTEXT_MAX_BYTES",
         "EVAL_ADVISOR_TIMEOUT_SECONDS",
+        "EVAL_ADVISOR_TRANSIENT_RETRIES",
+        "EVAL_ADVISOR_RETRY_DELAY_SECONDS",
         "EVAL_ADVISOR_INVOCATION_POLICY",
         "EVAL_ADVISOR_RANDOM_PROBABILITY",
         "EVAL_ADVISOR_MAX_CALLS",
@@ -871,6 +1058,10 @@ fn prepare_output_dir(
         "EVAL_ADVISOR_OPENJEV_POLICY_CONFIG",
         "EVAL_ADVISOR_FIXED_TURN",
         "EVAL_ADVISOR_FIXED_INTERVAL",
+        "EVAL_ADVISOR_SII_DECISION_TIMEOUT_SECONDS",
+        "EVAL_ADVISOR_SII_DECISION_INTERVAL",
+        "EVAL_ADVISOR_SII_DECISION_LOGPROBS",
+        "EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG",
         "EVAL_EXECUTOR_MAX_TURNS",
         "ADVISOR_MODEL",
         "ADVISORY_EXPERIMENT_ID",
@@ -1377,7 +1568,7 @@ mod tests {
         append_benchmark_result_to, output_dir, reject_source_conflict, resolve_text_source,
         validate_advisor_context_mode, validate_advisor_invocation, validate_advisor_scope,
         validate_advisor_timeout, validate_advisory_config, validate_openjev_policy_config,
-        validate_path_component,
+        validate_path_component, validate_retry_options, validate_sii_decision_policy_config,
     };
 
     fn fleet_agents() -> Vec<String> {
@@ -1452,6 +1643,15 @@ mod tests {
         assert!(validate_advisor_timeout(Some(86400)).is_ok());
         assert!(validate_advisor_timeout(Some(0)).is_err());
         assert!(validate_advisor_timeout(Some(86401)).is_err());
+    }
+
+    #[test]
+    fn advisor_retry_options_accept_only_documented_bounds() {
+        assert!(validate_retry_options(None, None).is_ok());
+        assert!(validate_retry_options(Some(0), Some(0)).is_ok());
+        assert!(validate_retry_options(Some(100), Some(86400)).is_ok());
+        assert!(validate_retry_options(Some(101), None).is_err());
+        assert!(validate_retry_options(None, Some(86401)).is_err());
     }
 
     #[test]
@@ -1559,7 +1759,7 @@ mod tests {
 
     #[test]
     fn platform_policies_allow_an_omitted_call_cap() {
-        for policy in ["random", "openjev"] {
+        for policy in ["random", "openjev", "sii-decision"] {
             assert!(
                 validate_advisor_invocation(AdvisorInvocationOptions {
                     policy: Some(policy),
@@ -1571,6 +1771,33 @@ mod tests {
                 .is_ok()
             );
         }
+    }
+
+    #[test]
+    fn sii_decision_invocation_accepts_separate_classifier_configuration() {
+        assert!(
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("sii-decision"),
+                max_calls: Some("unlimited"),
+                context_mode: Some("full-session"),
+                sii_decision_base_url: Some("http://sii-decision-svc:8000/v1"),
+                sii_decision_policy_config: Some(r#"{"schema_version":2}"#),
+                sii_decision_timeout_seconds: Some(30),
+                sii_decision_interval: Some(1),
+                sii_decision_logprobs: Some(20),
+                ..Default::default()
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_advisor_invocation(AdvisorInvocationOptions {
+                policy: Some("sii-decision"),
+                context_mode: Some("full-session"),
+                openjev_base_url: Some("http://openjev-svc:3000"),
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -1632,10 +1859,13 @@ mod tests {
     }
 
     #[test]
-    fn openjev_policy_configuration_requires_schema_one_json() {
+    fn decision_policy_configuration_accepts_migratable_and_current_schemas() {
         assert!(validate_openjev_policy_config(r#"{"schema_version":1}"#).is_ok());
-        assert!(validate_openjev_policy_config(r#"{"schema_version":2}"#).is_err());
+        assert!(validate_openjev_policy_config(r#"{"schema_version":2}"#).is_ok());
         assert!(validate_openjev_policy_config("[]").is_err());
+        assert!(validate_sii_decision_policy_config(r#"{"schema_version":1}"#).is_ok());
+        assert!(validate_sii_decision_policy_config(r#"{"schema_version":2}"#).is_ok());
+        assert!(validate_sii_decision_policy_config("[]").is_err());
     }
 
     #[test]

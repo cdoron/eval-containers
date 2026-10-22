@@ -30,6 +30,7 @@ RUN node --test \
       /opt/agent/advisory/context/session-context.test.mjs \
       /opt/agent/advisory/intervention/random-router.test.mjs \
       /opt/agent/advisory/intervention/openjev-policy.test.mjs \
+      /opt/agent/advisory/intervention/sii-decision-policy.test.mjs \
       /opt/agent/advisory/intervention/fixed-policy.test.mjs
 RUN chmod +x /opt/agent/advisory/service/start.sh
 
@@ -62,7 +63,7 @@ advisor_invocation_policy="${EVAL_ADVISOR_INVOCATION_POLICY:-self-initiated}"
 advisor_router_port="${EVAL_ADVISOR_ROUTER_PORT:-8012}"
 executor_base_url="${OPENAI_BASE_URL:-http://model:4000/v1}"
 opencode_base_url="$executor_base_url"
-if { [ "$advisor_invocation_policy" = random ] || [ "$advisor_invocation_policy" = openjev ] || [ "$advisor_invocation_policy" = fixed ]; } && \
+if { [ "$advisor_invocation_policy" = random ] || [ "$advisor_invocation_policy" = openjev ] || [ "$advisor_invocation_policy" = fixed ] || [ "$advisor_invocation_policy" = sii-decision ]; } && \
    { [ -n "$executor_prompt" ] || [ -n "$executor_variant" ]; }; then
   echo "opencode-advisory: platform advisor invocation does not accept an executor system-prompt addition" >&2
   exit 2
@@ -108,7 +109,7 @@ if [ -n "$model_context_limit" ] || [ -n "$model_output_limit" ]; then
 fi
 case "$advisor_invocation_policy" in
   self-initiated) ;;
-  random|openjev|fixed)
+  random|openjev|fixed|sii-decision)
     if [ "${EVAL_ADVISOR_CONTEXT_MODE:-agent-provided}" != full-session ]; then
       echo "opencode-advisory: platform advisor invocation requires EVAL_ADVISOR_CONTEXT_MODE=full-session" >&2
       exit 2
@@ -138,7 +139,7 @@ case "$advisor_invocation_policy" in
     opencode_base_url="http://127.0.0.1:${advisor_router_port}/v1"
     ;;
   *)
-    echo "opencode-advisory: EVAL_ADVISOR_INVOCATION_POLICY must be self-initiated, random, openjev, or fixed" >&2
+    echo "opencode-advisory: EVAL_ADVISOR_INVOCATION_POLICY must be self-initiated, random, openjev, fixed, or sii-decision" >&2
     exit 2
     ;;
 esac
