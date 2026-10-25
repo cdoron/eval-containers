@@ -1,10 +1,10 @@
 import { tool } from "@opencode-ai/plugin"
 import { spawn } from "child_process"
 import fs from "fs"
-import { request as httpRequest } from "http"
-import { request as httpsRequest } from "https"
 import os from "os"
 import path from "path"
+// @ts-ignore This absolute path is populated by the agent image.
+import { postJson } from "/opt/agent/advisory/tools/advisory-http.mjs"
 // @ts-ignore This absolute path is populated by the agent image.
 import { serializeSessionContext } from "/opt/agent/advisory/context/session-context.mjs"
 // @ts-ignore This absolute path is populated by the agent image.
@@ -102,35 +102,6 @@ async function exportSession(sessionID: string, directory: string): Promise<unkn
     if (output >= 0) fs.closeSync(output)
     fs.rmSync(temporaryDirectory, { recursive: true, force: true })
   }
-}
-
-async function postJson(url: string, payload: unknown): Promise<{
-  statusCode: number
-  body: string
-}> {
-  const target = new URL(url)
-  const body = JSON.stringify(payload)
-  const request = target.protocol === "https:" ? httpsRequest : httpRequest
-
-  return new Promise((resolve, reject) => {
-    const req = request(target, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      },
-    }, (res) => {
-      const chunks: Buffer[] = []
-      res.on("data", (chunk) => chunks.push(Buffer.from(chunk)))
-      res.once("error", reject)
-      res.once("end", () => resolve({
-        statusCode: res.statusCode ?? 0,
-        body: Buffer.concat(chunks).toString("utf8"),
-      }))
-    })
-    req.once("error", reject)
-    req.end(body)
-  })
 }
 
 export async function requestAdvice(advisorRequest: string, context: string): Promise<string> {

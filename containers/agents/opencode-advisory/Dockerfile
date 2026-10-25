@@ -28,6 +28,7 @@ RUN python3 -m venv /opt/agent/advisory/service/.venv \
 COPY advisory /opt/agent/advisory
 RUN node --test \
       /opt/agent/advisory/context/session-context.test.mjs \
+      /opt/agent/advisory/tools/advisory-http.test.mjs \
       /opt/agent/advisory/intervention/random-router.test.mjs \
       /opt/agent/advisory/intervention/openjev-policy.test.mjs \
       /opt/agent/advisory/intervention/sii-decision-policy.test.mjs \
