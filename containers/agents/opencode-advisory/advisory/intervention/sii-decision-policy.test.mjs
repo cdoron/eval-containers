@@ -127,6 +127,71 @@ test("normalizes logprobs over just the two option tokens (equal logprobs => 0.5
   assert.equal(decision.classifier.probabilities.continue_executor, 0.5)
 })
 
+test("defaults to a 0.5 call threshold: P(call_advisor) just above 0.5 selects", async () => {
+  const policy = new SiiDecisionInterventionPolicy({
+    baseURL: "http://sii-decision.invalid:8000",
+    apiKey: "token",
+    fetchImpl: async () => response({ A: -0.69, B: -0.72 }),
+  })
+  const decision = await policy.decide(executorRequest())
+  assert.ok(decision.classifier.probabilities.call_advisor > 0.5)
+  assert.equal(decision.selected, true)
+})
+
+test("a raised call threshold requires P(call_advisor) to clear it, not just exceed 0.5", async () => {
+  const policy = new SiiDecisionInterventionPolicy({
+    baseURL: "http://sii-decision.invalid:8000",
+    apiKey: "token",
+    callThreshold: 0.65,
+    maxCalls: "1",
+    fetchImpl: async () => response({ A: -0.5, B: -0.9 }), // P(call_advisor) ~= 0.60
+  })
+  const decision = await policy.decide(executorRequest())
+  assert.ok(decision.classifier.probabilities.call_advisor > 0.5)
+  assert.ok(decision.classifier.probabilities.call_advisor < 0.65)
+  assert.equal(decision.selected, false)
+  assert.equal(decision.classifier.choice, "continue_executor")
+  assert.equal(policy.calls, 0)
+})
+
+test("a raised call threshold still selects once P(call_advisor) clears it", async () => {
+  const policy = new SiiDecisionInterventionPolicy({
+    baseURL: "http://sii-decision.invalid:8000",
+    apiKey: "token",
+    callThreshold: 0.65,
+    maxCalls: "1",
+    fetchImpl: async () => response({ A: -0.2, B: -1.0 }), // P(call_advisor) ~= 0.69
+  })
+  const decision = await policy.decide(executorRequest())
+  assert.ok(decision.classifier.probabilities.call_advisor > 0.65)
+  assert.equal(decision.selected, true)
+  assert.equal(decision.classifier.choice, "call_advisor")
+  assert.equal(policy.calls, 1)
+})
+
+test("rejects a call threshold outside (0, 1)", () => {
+  for (const bad of [0, 1, -0.1, 1.1, NaN]) {
+    assert.throws(
+      () =>
+        new SiiDecisionInterventionPolicy({
+          baseURL: "http://sii-decision.invalid:8000",
+          apiKey: "token",
+          callThreshold: bad,
+        }),
+      /SII_DECISION_CALL_THRESHOLD must be a number strictly between 0 and 1/,
+    )
+  }
+})
+
+test("reports the configured call threshold in readyMetadata", () => {
+  const policy = new SiiDecisionInterventionPolicy({
+    baseURL: "http://sii-decision.invalid:8000",
+    apiKey: "token",
+    callThreshold: 0.65,
+  })
+  assert.equal(policy.readyMetadata().call_threshold, 0.65)
+})
+
 test("a much larger A logprob selects call_advisor with probability close to 1", async () => {
   const policy = new SiiDecisionInterventionPolicy({
     baseURL: "http://sii-decision.invalid:8000",

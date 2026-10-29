@@ -347,6 +347,7 @@ function envConfig() {
     siiDecisionInterval: process.env.EVAL_ADVISOR_SII_DECISION_INTERVAL || "1",
     siiDecisionPolicyConfig: process.env.EVAL_ADVISOR_SII_DECISION_POLICY_CONFIG || "",
     siiDecisionLogprobs: Number(process.env.EVAL_ADVISOR_SII_DECISION_LOGPROBS || "20"),
+    siiDecisionCallThreshold: Number(process.env.SII_DECISION_CALL_THRESHOLD || "0.5"),
   }
 }
 
@@ -383,6 +384,7 @@ function createPolicy(config) {
       maxTurns: config.maxTurns,
       policyConfig: config.siiDecisionPolicyConfig,
       logprobsCount: config.siiDecisionLogprobs,
+      callThreshold: config.siiDecisionCallThreshold,
     })
   }
   throw new Error("EVAL_ADVISOR_INVOCATION_POLICY must be random, openjev, fixed, or sii-decision for the intervention router")

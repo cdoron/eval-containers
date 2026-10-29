@@ -256,6 +256,7 @@ export class SiiDecisionInterventionPolicy {
     maxTurns = 0,
     policyConfig = "",
     logprobsCount = 20,
+    callThreshold = 0.5,
     transientRetries = process.env.EVAL_ADVISOR_TRANSIENT_RETRIES || 3,
     retryDelaySeconds = process.env.EVAL_ADVISOR_RETRY_DELAY_SECONDS || 30,
     fetchImpl = fetch,
@@ -272,6 +273,9 @@ export class SiiDecisionInterventionPolicy {
     if (!Number.isSafeInteger(logprobsCount) || logprobsCount < 2 || logprobsCount > 256) {
       throw new Error("SII_DECISION_LOGPROBS must be an integer from 2 to 256")
     }
+    if (typeof callThreshold !== "number" || !Number.isFinite(callThreshold) || callThreshold <= 0 || callThreshold >= 1) {
+      throw new Error("SII_DECISION_CALL_THRESHOLD must be a number strictly between 0 and 1")
+    }
     this.name = "sii-decision"
     this.url = completionsURL(baseURL)
     this.apiKey = apiKey
@@ -285,6 +289,7 @@ export class SiiDecisionInterventionPolicy {
     this.logprobsCount = logprobsCount
     this.transientRetries = nonNegativeInteger(transientRetries, "EVAL_ADVISOR_TRANSIENT_RETRIES")
     this.retryDelaySeconds = nonNegativeInteger(retryDelaySeconds, "EVAL_ADVISOR_RETRY_DELAY_SECONDS")
+    this.callThreshold = callThreshold
     this.config = parseSiiDecisionPolicyConfig(policyConfig)
     this.configSha256 = crypto.createHash("sha256").update(JSON.stringify(this.config)).digest("hex")
     this.fetchImpl = fetchImpl
@@ -306,6 +311,7 @@ export class SiiDecisionInterventionPolicy {
       max_input_tokens: this.config.state.context.max_input_tokens,
       transient_retries: this.transientRetries,
       retry_delay_seconds: this.retryDelaySeconds,
+      call_threshold: this.callThreshold,
       policy_config_sha256: this.configSha256,
     }
   }
@@ -435,7 +441,7 @@ export class SiiDecisionInterventionPolicy {
       const callProb = Math.exp(callLogprob)
       const continueProb = Math.exp(continueLogprob)
       const total = callProb + continueProb
-      const selected = callProb >= continueProb
+      const selected = callProb / total >= this.callThreshold
       const choice = selected ? this.config.decision.call_choice : this.config.decision.continue_choice
       this.lastInputTokens = inputTokens
       if (selected) {
