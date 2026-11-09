@@ -60,6 +60,13 @@ executor_position="${EVAL_EXECUTOR_SYSTEM_PROMPT_POSITION:-append}"
 model_context_limit="${EVAL_MODEL_CONTEXT_LIMIT:-}"
 model_output_limit="${EVAL_MODEL_OUTPUT_LIMIT:-}"
 model_limits=""
+max_turns="${EVAL_EXECUTOR_MAX_TURNS:-0}"
+case "$max_turns" in
+  ''|*[!0-9]*)
+    echo "opencode-advisory: EVAL_EXECUTOR_MAX_TURNS must be a non-negative integer" >&2
+    exit 2
+    ;;
+esac
 advisor_invocation_policy="${EVAL_ADVISOR_INVOCATION_POLICY:-self-initiated}"
 advisor_router_port="${EVAL_ADVISOR_ROUTER_PORT:-8012}"
 executor_base_url="${OPENAI_BASE_URL:-http://model:4000/v1}"
@@ -94,6 +101,26 @@ if [ -n "$base_system_prompt" ]; then
   base_system_prompt_json="$(BASE_SYSTEM_PROMPT="$base_system_prompt" python3 -c 'import json, os; print(json.dumps(os.environ["BASE_SYSTEM_PROMPT"]))')"
   agent_config=',"agent":{"eval-base":{"mode":"primary","prompt":'"$base_system_prompt_json"'}}'
   opencode_agent_args=(--agent eval-base)
+fi
+# OpenCode's own agent.steps/maxSteps field (built into the opencode-ai
+# binary itself, independent of the opencode-advisory intervention router)
+# caps agentic iterations: at the limit, OpenCode forces a text-only wrap-up
+# response (disables tools) rather than killing the process. Applies to
+# every agent regardless of EVAL_ADVISOR_INVOCATION_POLICY, including
+# self-initiated, where no intervention router runs. 0 (default) leaves it
+# unset -- unbounded, same as upstream OpenCode's own default. Attach to
+# whichever primary agent "opencode run" actually uses: the replacement
+# "eval-base" agent when EVAL_OPENCODE_BASE_SYSTEM_PROMPT is set, otherwise
+# OpenCode's own built-in default primary agent, "build" (confirmed via
+# `opencode debug agent build` and a live run's llm-call log line
+# `agent=build mode=primary`, both against opencode-ai 1.4.3 -- the exact
+# version pinned above).
+if [ "$max_turns" -gt 0 ]; then
+  if [ -n "$base_system_prompt" ]; then
+    agent_config=',"agent":{"eval-base":{"mode":"primary","prompt":'"$base_system_prompt_json"',"steps":'"$max_turns"'}}'
+  else
+    agent_config=',"agent":{"build":{"steps":'"$max_turns"'}}'
+  fi
 fi
 if [ -n "$model_context_limit" ] || [ -n "$model_output_limit" ]; then
   case "$model_context_limit:$model_output_limit" in
