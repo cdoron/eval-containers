@@ -75,6 +75,20 @@ if [ "${EVAL_AGENT:-}" = "opencode-advisory" ]; then
   )
 fi
 
+# opencode has no run.sh logic of its own to translate a turn cap into
+# OpenCode's native agent.steps config. OPENCODE_CONFIG_CONTENT is OpenCode's
+# own env var: a JSON string the opencode-ai binary merges on top of the
+# opencode.json its run.sh writes, letting the orchestrator (run-benchmark.sh)
+# set agent.steps without any image rebuild. Scoped to opencode only, kept out
+# of every other agent's scrubbed environment so adding it cannot change their
+# runtime contract, even through an otherwise harmless empty/default variable.
+opencode_env=()
+if [ "${EVAL_AGENT:-}" = "opencode" ]; then
+  opencode_env=(
+    "OPENCODE_CONFIG_CONTENT=${OPENCODE_CONFIG_CONTENT:-}"
+  )
+fi
+
 # Not exec'd: record the exit status for write-result (rule 16). 124 = timeout.
 rc=0
 timeout -k 30 "${TIMEOUT:-300}" gosu agent env -i \
@@ -86,6 +100,7 @@ timeout -k 30 "${TIMEOUT:-300}" gosu agent env -i \
   ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}" ANTHROPIC_API_KEY=sk-proxy \
   GOOGLE_GEMINI_BASE_URL="${GOOGLE_GEMINI_BASE_URL:-}" GEMINI_API_KEY=sk-proxy \
   "${advisor_env[@]}" \
+  "${opencode_env[@]}" \
   /run.sh > /output/agent/stdout.log 2> /output/agent/stderr.log || rc=$?
 printf '%s' "$rc" > /output/agent/.exit-code
 exit "$rc"
